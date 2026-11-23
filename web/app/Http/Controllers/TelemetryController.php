@@ -2,10 +2,6 @@
 
 namespace App\Http\Controllers;
 
-use App\Models\AuditLog;
-use App\Models\Command;
-use App\Models\Reading;
-use App\Models\User;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
@@ -16,21 +12,28 @@ class TelemetryController extends Controller
     private const DEFAULT_CALIB_FLOW = '3.94 * exp(0.617 * x)';
     private const DEFAULT_CALIB_TEMP = '10.4 * x + 0.0795';
 
-    // Constantes físicas do duto LTR701 (diâmetro interno ~50 mm)
+    // Constantes físicas do duto LTR701 (Kit 001)
     private const AMBIENT_TEMP  = 22.0;      // °C
     private const P_ATM_PA      = 101325.0;  // Pa (1 atm)
     private const R_AIR         = 287.05;    // J/(kg·K)
     private const DUCT_AREA_M2  = 0.0019635; // pi * (0.025 m)^2
     private const K_DUCT_LOSS   = 3.2;       // Perda de carga do conjunto
     private const TAU_FLOW_BASE = 0.964;     // 1 / 1.037 s (Ativ. 10)
-    private const C_TH_BASE     = 2.500;     // Constante térmica base (s) em 25 kg/h
+    private const C_TH_BASE     = 5.157;     // 1 / 0.1939 s (Ativ. 07 - Kit 001)
     private const Q_REF_KGH     = 25.0;      // Vazão de referência (~25% do ventilador)
 
-    private const DEVICES_CACHE_KEY = 'ltr701_known_devices_v1';
+    private const DEVICES_CACHE_KEY  = 'ltr701_known_devices_v1';
+    private const READINGS_CACHE_KEY = 'ltr701_live_readings_v1';
+    private const COMMANDS_CACHE_KEY = 'ltr701_live_commands_v1';
+    private const STATE_CACHE_KEY    = 'ltr701_live_state_v1';
+    private const LOGS_CACHE_KEY     = 'ltr701_live_logs_v1';
+
+    private const MAX_LIVE_READINGS = 120;
+    private const MAX_LIVE_LOGS     = 100;
     private const ONLINE_TTL_SEC    = 15;
 
     /**
-     * POST /api/readings (ESP32 / MATLAB / cliente.py envia leituras físicas via Wi-Fi)
+     * POST /api/readings (MATLAB / ESP32 envia leituras em tempo real)
      */
     public function storeReading(Request $request): JsonResponse
     {
@@ -43,13 +46,13 @@ class TelemetryController extends Controller
             'flow_v'    => ['nullable', 'numeric'],
         ]);
 
-        $deviceId = trim((string) $request->input('device_id', 'ESP32-LTR701')) ?: 'ESP32-LTR701';
+        $deviceId = trim((string) $request->input('device_id', 'MATLAB-NI6003')) ?: 'MATLAB-NI6003';
         $this->touchDevice($deviceId, $request, 'POST /api/readings');
 
         $vars  = $request->input('variables', []);
         $state = $this->currentControlState();
 
-        foreach (['temp', 'flow', 'temp_v', 'flow_v', 'u_temp', 'u_flow', 'pressure_pa'] as $key) {
+        foreach (['temp', 'flow', 'temp_v', 'flow_v', 'u_temp', 'u_flow', 'pressure_pa', 'rtt_ms'] as $key) {
             if (!isset($vars[$key]) && $request->has($key)) {
                 $vars[$key] = (float) $request->input($key);
             }
@@ -84,24 +87,20 @@ class TelemetryController extends Controller
             }
         }
 
-        $reading = new Reading();
-        $reading->device_id = $deviceId;
-        $reading->user_id   = null;
-        $reading->payload   = $vars;
-        $reading->ts        = now();
-        $reading->save();
+        $now   = now();
+        $entry = $this->pushLiveReading($deviceId, $vars, $now);
 
         return response()->json([
             'status'    => 'ok',
-            'id'        => $reading->id,
+            'id'        => $entry['id'],
             'device_id' => $deviceId,
             'saved'     => $vars,
-            'ts'        => $reading->ts->toIso8601String(),
+            'ts'        => $now->toIso8601String(),
         ], 201);
     }
 
     /**
-     * GET /api/commands (ESP32 / MATLAB consulta comandos pendentes)
+     * GET /api/commands (MATLAB / ESP32 consulta comandos pendentes)
      */
     public function pendingCommands(Request $request): JsonResponse
     {
@@ -110,14 +109,13 @@ class TelemetryController extends Controller
             $this->touchDevice((string) $deviceId, $request, 'GET /api/commands');
         }
 
-        $commands = Command::where('acked', false)
-            ->orderBy('id')
-            ->get()
-            ->map(fn (Command $cmd) => [
-                'id'    => $cmd->id,
-                'name'  => $cmd->name,
-                'value' => $cmd->decoded_value,
-                'ts'    => $cmd->ts?->toIso8601String(),
+        $commands = collect(Cache::get(self::COMMANDS_CACHE_KEY, []))
+            ->where('acked', false)
+            ->map(fn (array $cmd) => [
+                'id'    => $cmd['id'],
+                'name'  => $cmd['name'],
+                'value' => $cmd['value'],
+                'ts'    => $cmd['ts'],
             ])
             ->values();
 
@@ -125,7 +123,7 @@ class TelemetryController extends Controller
     }
 
     /**
-     * POST /api/commands/ack (ESP32 / MATLAB confirma recebimento)
+     * POST /api/commands/ack (MATLAB / ESP32 confirma execução dos comandos)
      */
     public function ackCommands(Request $request): JsonResponse
     {
@@ -134,39 +132,63 @@ class TelemetryController extends Controller
             $this->touchDevice((string) $deviceId, $request, 'POST /api/commands/ack');
         }
 
-        $ids   = $request->input('ids');
-        $query = Command::where('acked', false);
-
-        if (is_array($ids) && count($ids) > 0) {
-            $query->whereIn('id', $ids);
+        $ids = $request->input('ids');
+        if (is_numeric($ids)) {
+            $ids = [(int) $ids];
+        } elseif (is_array($ids)) {
+            $ids = array_map('intval', $ids);
+        } else {
+            $ids = [];
         }
+
+        $ackedCount = 0;
+
+        Cache::lock('ltr701_cmd_lock', 2)->block(2, function () use ($ids, &$ackedCount): void {
+            $commands = Cache::get(self::COMMANDS_CACHE_KEY, []);
+
+            foreach ($commands as &$cmd) {
+                if (!($cmd['acked'] ?? false)) {
+                    if (empty($ids) || in_array((int) $cmd['id'], $ids, true)) {
+                        $cmd['acked'] = true;
+                        $ackedCount++;
+                    }
+                }
+            }
+            unset($cmd);
+
+            // Mantém apenas comandos ainda pendentes + últimos 20 confirmados
+            $commands = array_values(array_filter(
+                $commands,
+                fn (array $c, int $idx) => !($c['acked'] ?? false) || $idx >= count($commands) - 20,
+                ARRAY_FILTER_USE_BOTH
+            ));
+
+            Cache::put(self::COMMANDS_CACHE_KEY, $commands, now()->addHours(12));
+        });
 
         return response()->json([
             'status' => 'ok',
-            'acked'  => $query->update(['acked' => true]),
+            'acked'  => $ackedCount,
         ]);
     }
 
     /**
-     * GET /panel/history (Retorna histórico real + estado + lista de placas detectadas)
+     * GET /panel/history (Retorna buffer ao vivo + estado + lista de placas online)
      */
     public function history(Request $request): JsonResponse
     {
-        $limit    = min(max((int) $request->query('limit', 80), 1), 500);
+        $limit    = min(max((int) $request->query('limit', 80), 1), self::MAX_LIVE_READINGS);
         $deviceId = $request->query('device_id');
 
-        $query = Reading::orderByDesc('id')->limit($limit);
+        $readings = collect(Cache::get(self::READINGS_CACHE_KEY, []));
 
         if ($deviceId && $deviceId !== 'ALL') {
-            $query->where('device_id', $deviceId);
+            $readings = $readings->where('device_id', $deviceId);
         } elseif ($request->boolean('real_only', true)) {
-            $query->where('device_id', 'not like', 'SIM-%');
+            $readings = $readings->reject(fn (array $r) => str_starts_with((string) ($r['device_id'] ?? ''), 'SIM-'));
         }
 
-        $readings = $query->get()
-            ->reverse()
-            ->values()
-            ->map(fn (Reading $r) => $this->formatReading($r));
+        $readings = $readings->slice(-$limit)->values();
 
         return response()->json([
             'readings' => $readings,
@@ -176,7 +198,7 @@ class TelemetryController extends Controller
     }
 
     /**
-     * POST /panel/send (Comandos da Aba Real para hardware ESP32 / MATLAB)
+     * POST /panel/send (Envia comando em tempo real da interface para o MATLAB / ESP32)
      */
     public function sendCommand(Request $request): JsonResponse
     {
@@ -229,16 +251,36 @@ class TelemetryController extends Controller
             }
         }
 
-        $cmd = new Command();
-        $cmd->name          = $name;
-        $cmd->decoded_value = $value;
-        $cmd->user_id       = $request->user()->id;
-        $cmd->acked         = false;
-        $cmd->ts            = now();
-        $cmd->save();
+        Cache::lock('ltr701_cmd_lock', 2)->block(2, function () use ($name, $value): void {
+            $commands = Cache::get(self::COMMANDS_CACHE_KEY, []);
+            $nextId   = empty($commands) ? 1 : (max(array_column($commands, 'id')) + 1);
+
+            $commands[] = [
+                'id'    => $nextId,
+                'name'  => $name,
+                'value' => $value,
+                'acked' => false,
+                'ts'    => now()->toIso8601String(),
+            ];
+
+            Cache::put(self::COMMANDS_CACHE_KEY, $commands, now()->addHours(12));
+
+            $state = Cache::get(self::STATE_CACHE_KEY, $this->defaultState());
+            if ($name === 'enable') {
+                $state['enable_temp'] = ($value === 1);
+            } elseif ($name === 'setpoint') {
+                $state['setpoint_temp'] = (float) $value;
+            } elseif (in_array($name, ['enable_flow', 'enable_temp'], true)) {
+                $state[$name] = ($value === 1);
+            } else {
+                $state[$name] = $value;
+            }
+
+            Cache::put(self::STATE_CACHE_KEY, $state, now()->addHours(12));
+        });
 
         $target = $validated['device_id'] ?? 'BROADCAST';
-        AuditLog::record("Comando real [{$target}]: {$name} = {$value}", $request->user()->id);
+        $this->recordVolatileLog("Comando tempo real [{$target}]: {$name} = {$value}", $request->ip());
 
         return response()->json([
             'status' => 'ok',
@@ -247,15 +289,13 @@ class TelemetryController extends Controller
     }
 
     /**
-     * POST /panel/simulate
-     * Reaproveitado para gravar leituras reais recebidas pela porta USB Serial (Web Serial API)
-     * com criptografia no MySQL quando o ESP32 está plugado no cabo USB.
+     * POST /panel/simulate (Recebe telemetria USB Serial sem gravar em banco)
      */
     public function simulate(Request $request): JsonResponse
     {
         if ($request->input('source') !== 'usb') {
             return response()->json([
-                'message' => 'A Sombra Digital roda isolada no cliente; este endpoint persiste apenas telemetria USB autenticada.',
+                'message' => 'A Sombra Digital roda isolada no cliente; este endpoint recebe apenas telemetria USB.',
             ], 400);
         }
 
@@ -291,37 +331,85 @@ class TelemetryController extends Controller
             'sp_temp' => $state['setpoint_temp'],
         ]);
 
-        $reading = new Reading();
-        $reading->device_id = $validated['device_id'];
-        $reading->user_id   = $request->user()->id;
-        $reading->payload   = $payload;
-        $reading->ts        = now();
-        $reading->save();
+        $entry = $this->pushLiveReading($validated['device_id'], $payload, now());
 
         return response()->json([
             'status'  => 'ok',
-            'reading' => $this->formatReading($reading),
+            'reading' => $entry,
         ], 201);
     }
 
     /**
-     * GET /panel/logs (Exclusivo admin)
+     * GET /panel/logs (Logs voláteis em memória/cache)
      */
     public function logs(): JsonResponse
     {
-        $logs    = AuditLog::orderByDesc('id')->limit(100)->get();
-        $userIds = $logs->pluck('user_id')->filter()->unique()->values();
-        $emails  = User::whereIn('id', $userIds)->pluck('email', 'id');
-
         return response()->json([
-            'logs' => $logs->map(fn (AuditLog $log) => [
-                'id'     => $log->id,
-                'user'   => $log->user_id ? ($emails[$log->user_id] ?? "ID #{$log->user_id}") : 'Sistema / API',
-                'ip'     => $log->ip ?? '-',
-                'action' => $log->action,
-                'ts'     => $log->ts?->format('d/m/Y H:i:s'),
-            ]),
+            'logs' => array_reverse(Cache::get(self::LOGS_CACHE_KEY, [])),
         ]);
+    }
+
+    private function pushLiveReading(string $deviceId, array $p, \Illuminate\Support\Carbon $now): array
+    {
+        $flow = isset($p['flow']) ? (float) $p['flow'] : null;
+        $temp = isset($p['temp']) ? (float) $p['temp'] : null;
+        $phys = $this->computePhysics($flow ?? 0.0, $temp ?? self::AMBIENT_TEMP);
+
+        $entry = [];
+
+        Cache::lock('ltr701_read_lock', 2)->block(2, function () use ($deviceId, $p, $flow, $temp, $phys, $now, &$entry): void {
+            $readings = Cache::get(self::READINGS_CACHE_KEY, []);
+            $nextId   = empty($readings) ? 1 : (max(array_column($readings, 'id')) + 1);
+
+            $entry = [
+                'id'           => $nextId,
+                'device_id'    => $deviceId,
+                'flow'         => $flow,
+                'temp'         => $temp,
+                'u_flow'       => isset($p['u_flow']) ? (float) $p['u_flow'] : null,
+                'u_temp'       => isset($p['u_temp']) ? (float) $p['u_temp'] : null,
+                'sp_flow'      => isset($p['sp_flow']) ? (float) $p['sp_flow'] : null,
+                'sp_temp'      => isset($p['sp_temp']) ? (float) $p['sp_temp'] : null,
+                'rtt_ms'       => isset($p['rtt_ms']) ? (float) $p['rtt_ms'] : null,
+                'velocity'     => isset($p['velocity']) ? (float) $p['velocity'] : $phys['velocity'],
+                'pressure_pa'  => isset($p['pressure_pa']) ? (float) $p['pressure_pa'] : $phys['pressure_pa'],
+                'pressure_atm' => isset($p['pressure_atm']) ? (float) $p['pressure_atm'] : $phys['pressure_atm'],
+                'density'      => isset($p['density']) ? (float) $p['density'] : $phys['density'],
+                'tau_flow'     => isset($p['tau_flow']) ? (float) $p['tau_flow'] : $phys['tau_flow'],
+                'tau_temp'     => isset($p['tau_temp']) ? (float) $p['tau_temp'] : $phys['tau_temp'],
+                'ts'           => $now->format('H:i:s'),
+                'ts_full'      => $now->format('d/m/Y H:i:s'),
+            ];
+
+            $readings[] = $entry;
+            if (count($readings) > self::MAX_LIVE_READINGS) {
+                $readings = array_slice($readings, -self::MAX_LIVE_READINGS);
+            }
+
+            Cache::put(self::READINGS_CACHE_KEY, $readings, now()->addHours(12));
+        });
+
+        return $entry;
+    }
+
+    private function recordVolatileLog(string $action, ?string $ip): void
+    {
+        $logs   = Cache::get(self::LOGS_CACHE_KEY, []);
+        $nextId = empty($logs) ? 1 : (max(array_column($logs, 'id')) + 1);
+
+        $logs[] = [
+            'id'     => $nextId,
+            'user'   => 'Operador Local (Sem DB)',
+            'ip'     => $ip ?? '-',
+            'action' => $action,
+            'ts'     => now()->format('d/m/Y H:i:s'),
+        ];
+
+        if (count($logs) > self::MAX_LIVE_LOGS) {
+            $logs = array_slice($logs, -self::MAX_LIVE_LOGS);
+        }
+
+        Cache::put(self::LOGS_CACHE_KEY, $logs, now()->addHours(12));
     }
 
     private function touchDevice(string $deviceId, Request $request, string $endpoint): void
@@ -346,7 +434,7 @@ class TelemetryController extends Controller
 
         foreach ($cached as $id => $info) {
             $age = max(0, $now - (int) ($info['last_seen'] ?? 0));
-            $result[$id] = [
+            $result[] = [
                 'device_id' => $id,
                 'ip'        => $info['ip'] ?? '-',
                 'transport' => 'wifi',
@@ -357,34 +445,9 @@ class TelemetryController extends Controller
             ];
         }
 
-        // Complementa com placas reais já vistas no histórico do MySQL
-        $dbDevices = Reading::where('device_id', 'not like', 'SIM-%')
-            ->selectRaw('device_id, MAX(ts) as last_ts')
-            ->groupBy('device_id')
-            ->orderByDesc('last_ts')
-            ->limit(15)
-            ->get();
-
-        foreach ($dbDevices as $row) {
-            $id = (string) $row->device_id;
-            if (!isset($result[$id])) {
-                $ts  = $row->last_ts ? strtotime((string) $row->last_ts) : 0;
-                $age = $ts > 0 ? max(0, $now - $ts) : 9999;
-                $result[$id] = [
-                    'device_id' => $id,
-                    'ip'        => str_starts_with($id, 'USB-') ? 'Serial Local' : 'Histórico DB',
-                    'transport' => str_starts_with($id, 'USB-') ? 'usb-history' : 'wifi',
-                    'online'    => $age <= self::ONLINE_TTL_SEC,
-                    'age_sec'   => $age,
-                    'last_iso'  => $ts > 0 ? date('H:i:s', $ts) : '-',
-                    'endpoint'  => 'MySQL',
-                ];
-            }
-        }
-
         usort($result, fn ($a, $b) => ($b['online'] <=> $a['online']) ?: ($a['age_sec'] <=> $b['age_sec']));
 
-        return array_values($result);
+        return $result;
     }
 
     private function computePhysics(float $flowKgh, float $tempC): array
@@ -409,54 +472,31 @@ class TelemetryController extends Controller
         ];
     }
 
-    private function formatReading(Reading $r): array
+    private function defaultState(): array
     {
-        $p    = $r->payload;
-        $flow = isset($p['flow']) ? (float) $p['flow'] : null;
-        $temp = isset($p['temp']) ? (float) $p['temp'] : null;
-        $phys = $this->computePhysics($flow ?? 0.0, $temp ?? self::AMBIENT_TEMP);
-
         return [
-            'id'           => $r->id,
-            'device_id'    => $r->device_id,
-            'flow'         => $flow,
-            'temp'         => $temp,
-            'u_flow'       => isset($p['u_flow']) ? (float) $p['u_flow'] : null,
-            'u_temp'       => isset($p['u_temp']) ? (float) $p['u_temp'] : null,
-            'sp_flow'      => isset($p['sp_flow']) ? (float) $p['sp_flow'] : null,
-            'sp_temp'      => isset($p['sp_temp']) ? (float) $p['sp_temp'] : null,
-            'velocity'     => isset($p['velocity']) ? (float) $p['velocity'] : $phys['velocity'],
-            'pressure_pa'  => isset($p['pressure_pa']) ? (float) $p['pressure_pa'] : $phys['pressure_pa'],
-            'pressure_atm' => isset($p['pressure_atm']) ? (float) $p['pressure_atm'] : $phys['pressure_atm'],
-            'density'      => isset($p['density']) ? (float) $p['density'] : $phys['density'],
-            'tau_flow'     => isset($p['tau_flow']) ? (float) $p['tau_flow'] : $phys['tau_flow'],
-            'tau_temp'     => isset($p['tau_temp']) ? (float) $p['tau_temp'] : $phys['tau_temp'],
-            'ts'           => $r->ts?->format('H:i:s'),
-            'ts_full'      => $r->ts?->format('d/m/Y H:i:s'),
+            'enable_flow'   => false,
+            'setpoint_flow' => 50.0,
+            'kp_flow'       => 0.166,
+            'ki_flow'       => 0.276,
+            'calib_flow'    => self::DEFAULT_CALIB_FLOW,
+
+            'enable_temp'   => false,
+            'setpoint_temp' => 40.0,
+            'kp_temp'       => 0.800,
+            'ki_temp'       => 0.300,
+            'calib_temp'    => self::DEFAULT_CALIB_TEMP,
         ];
     }
 
     private function currentControlState(): array
     {
-        $latest = fn (string $name, $default) => optional(
-            Command::where('name', $name)->orderByDesc('id')->first()
-        )->decoded_value ?? $default;
+        $state   = array_merge($this->defaultState(), Cache::get(self::STATE_CACHE_KEY, []));
+        $pending = collect(Cache::get(self::COMMANDS_CACHE_KEY, []))->where('acked', false)->count();
 
-        return [
-            'enable_flow'      => ((int) $latest('enable_flow', 0)) === 1,
-            'setpoint_flow'    => (float) $latest('setpoint_flow', 50.0),
-            'kp_flow'          => (float) $latest('kp_flow', 0.166),
-            'ki_flow'          => (float) $latest('ki_flow', 0.276),
-            'calib_flow'       => (string) $latest('calib_flow', self::DEFAULT_CALIB_FLOW),
+        $state['pending_commands'] = $pending;
 
-            'enable_temp'      => ((int) $latest('enable_temp', $latest('enable', 0))) === 1,
-            'setpoint_temp'    => (float) $latest('setpoint_temp', $latest('setpoint', 40.0)),
-            'kp_temp'          => (float) $latest('kp_temp', 0.800),
-            'ki_temp'          => (float) $latest('ki_temp', 0.300),
-            'calib_temp'       => (string) $latest('calib_temp', self::DEFAULT_CALIB_TEMP),
-
-            'pending_commands' => Command::where('acked', false)->count(),
-        ];
+        return $state;
     }
 
     private function safeEvalMath(string $expression, float $x): float

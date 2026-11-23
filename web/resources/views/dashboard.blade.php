@@ -3,8 +3,9 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="google" content="notranslate">
     <meta name="csrf-token" content="{{ csrf_token() }}">
-    <title>Supervisório LTR701 · Planta Real & Sombra Digital</title>
+    <title>Supervisório LTR701 · Planta Real &amp; Sombra Digital</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
     <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.14.8/dist/cdn.min.js"></script>
@@ -68,6 +69,12 @@
 </head>
 <body x-data="ltr701App()" x-init="init()">
 
+@php
+    $userName = auth()->user()?->name ?? 'Operador Local (Tempo Real)';
+    $userRole = auth()->user()?->role ?? 'admin';
+    $isAdmin  = !auth()->check() || $userRole === 'admin';
+@endphp
+
 {{-- Navbar Superior --}}
 <nav class="navbar navbar-expand-lg border-bottom border-secondary-subtle bg-dark px-3 py-2">
     <div class="container-fluid">
@@ -98,15 +105,17 @@
 
         <div class="d-flex align-items-center gap-3">
             <div class="text-end d-none d-md-block">
-                <div class="small fw-semibold lh-1">{{ auth()->user()->name }}</div>
-                <span class="badge {{ auth()->user()->role === 'admin' ? 'text-bg-danger' : 'text-bg-info' }}" style="font-size: 0.65rem;">
-                    {{ strtoupper(auth()->user()->role) }}
+                <div class="small fw-semibold lh-1">{{ $userName }}</div>
+                <span class="badge {{ $userRole === 'admin' ? 'text-bg-danger' : 'text-bg-info' }}" style="font-size: 0.65rem;">
+                    {{ strtoupper($userRole) }}
                 </span>
             </div>
-            <form method="POST" action="{{ route('logout') }}" class="m-0">
-                @csrf
-                <button type="submit" class="btn btn-outline-light btn-sm">Sair</button>
-            </form>
+            @auth
+                <form method="POST" action="{{ route('logout') }}" class="m-0">
+                    @csrf
+                    <button type="submit" class="btn btn-outline-light btn-sm">Sair</button>
+                </form>
+            @endauth
         </div>
     </div>
 </nav>
@@ -135,7 +144,7 @@
                         <span class="small text-light fw-semibold" x-text="boardStatusText()"></span>
                     </div>
                     <div class="small text-secondary mt-1">
-                        Comandos dos sliders vão direto para a placa selecionada (USB Serial ou API Wi-Fi) e são gravados criptografados no MySQL.
+                        Comandos dos sliders vão direto para a placa selecionada (MATLAB NI-USB-6003, ESP32 Wi-Fi ou USB Serial) em tempo real.
                     </div>
                 </div>
 
@@ -146,7 +155,7 @@
                         <select class="form-select bg-dark border-success text-light"
                                 x-model="selectedBoardKey"
                                 @change="onBoardChange()">
-                            <option value="ALL">Todas as placas Wi-Fi (Auto)</option>
+                            <option value="ALL">Todas as placas Wi-Fi / REST (Auto)</option>
 
                             <optgroup label="── Portas USB (Web Serial · 115200 baud) ──">
                                 <template x-if="usb.connected">
@@ -157,9 +166,9 @@
                                 </template>
                             </optgroup>
 
-                            <optgroup label="── Placas na Rede (Wi-Fi / REST API) ──">
+                            <optgroup label="── Placas na Rede (MATLAB NI-6003 / ESP32 REST) ──">
                                 <template x-if="wifiDevices.length === 0">
-                                    <option disabled value="">Nenhuma placa Wi-Fi detectada ainda</option>
+                                    <option disabled value="">Nenhuma placa REST detectada ainda</option>
                                 </template>
                                 <template x-for="dev in wifiDevices" :key="dev.device_id">
                                     <option :value="'wifi:' + dev.device_id"
@@ -388,7 +397,7 @@
                                     <span class="text-secondary">Kp Temp.</span>
                                     <span class="text-warning fw-semibold num-fixed-sm" x-text="fmt(realForm.kpTemp, 3)"></span>
                                 </div>
-                                <input type="range" class="form-range" min="0" max="2.5" step="0.01"
+                                <input type="range" class="form-range" min="0" max="10.0" step="0.05"
                                        x-model.number="realForm.kpTemp"
                                        @input="queueRealSlider('kp_temp', realForm.kpTemp)">
                             </div>
@@ -397,7 +406,7 @@
                                     <span class="text-secondary">Ki Temp.</span>
                                     <span class="text-warning fw-semibold num-fixed-sm" x-text="fmt(realForm.kiTemp, 3)"></span>
                                 </div>
-                                <input type="range" class="form-range" min="0" max="2.0" step="0.01"
+                                <input type="range" class="form-range" min="0" max="3.0" step="0.01"
                                        x-model.number="realForm.kiTemp"
                                        @input="queueRealSlider('ki_temp', realForm.kiTemp)">
                             </div>
@@ -416,7 +425,7 @@
         <div class="card panel-card rounded-3 mb-3">
             <div class="card-header bg-transparent border-secondary-subtle d-flex justify-content-between align-items-center py-2">
                 <span class="fw-semibold small text-success">Gráfico Unificado Real · Vazão × Temperatura × u₁ / u₂ (2 Hz)</span>
-                <span class="small text-secondary" x-show="realReadings.length === 0">Conecte o ESP32 (USB/Wi-Fi) ou rode cliente.py para plotar dados reais</span>
+                <span class="small text-secondary" x-show="realReadings.length === 0">Conecte o MATLAB (NI-USB-6003) ou ESP32 para plotar dados reais</span>
             </div>
             <div class="card-body py-2"><div class="chart-box-lg"><canvas id="realUnifiedChart"></canvas></div></div>
         </div>
@@ -425,7 +434,7 @@
             <div class="col-12 col-lg-6">
                 <div class="card panel-card rounded-3 h-100">
                     <div class="card-header bg-transparent border-secondary-subtle py-2 small fw-semibold text-info">
-                        Malha Real · Vazão (kg/h) & Controlador u₁ (V)
+                        Malha Real · Vazão (kg/h) &amp; Controlador u₁ (V)
                     </div>
                     <div class="card-body py-2"><div class="chart-box"><canvas id="realFlowChart"></canvas></div></div>
                 </div>
@@ -433,7 +442,7 @@
             <div class="col-12 col-lg-6">
                 <div class="card panel-card rounded-3 h-100">
                     <div class="card-header bg-transparent border-secondary-subtle py-2 small fw-semibold text-warning">
-                        Malha Real · Temperatura (°C) & Controlador u₂ (V)
+                        Malha Real · Temperatura (°C) &amp; Controlador u₂ (V)
                     </div>
                     <div class="card-body py-2"><div class="chart-box"><canvas id="realTempChart"></canvas></div></div>
                 </div>
@@ -456,7 +465,7 @@
                               x-text="simRunning ? 'Simulação Acoplada Rodando (2 Hz Gráficos · 1 Hz Displays)' : 'Simulação Pausada'"></span>
                     </div>
                     <div class="small text-secondary mt-1">
-                        Clone exato da aba real rodando localmente no navegador. Nenhuma alteração de SP, Kp, Ki ou planta é enviada ao ESP32 ou ao MySQL.
+                        Clone exato da aba real rodando localmente no navegador. Nenhuma alteração de SP, Kp, Ki ou planta é enviada ao MATLAB/ESP32.
                     </div>
                 </div>
 
@@ -490,7 +499,7 @@
                     <div class="col-12 col-lg-5">
                         <div class="card panel-card rounded-3 h-100">
                             <div class="card-header bg-transparent border-secondary-subtle py-2 small fw-semibold">
-                                Parâmetros Físicos da Sombra Digital (Tempo Real)
+                                Parâmetros Físicos da Sombra Digital (Kit 001 · Tempo Real)
                             </div>
                             <div class="card-body py-2 small">
                                 <div class="row g-2">
@@ -738,14 +747,14 @@
                                     <span class="text-secondary">Kp Temp.</span>
                                     <span class="text-warning fw-semibold num-fixed-sm" x-text="fmt(simState.kp_temp, 3)"></span>
                                 </div>
-                                <input type="range" class="form-range" min="0" max="2.5" step="0.01" x-model.number="simState.kp_temp" @input="runStepTest()">
+                                <input type="range" class="form-range" min="0" max="10.0" step="0.05" x-model.number="simState.kp_temp" @input="runStepTest()">
                             </div>
                             <div class="col-6">
                                 <div class="d-flex justify-content-between small">
                                     <span class="text-secondary">Ki Temp.</span>
                                     <span class="text-warning fw-semibold num-fixed-sm" x-text="fmt(simState.ki_temp, 3)"></span>
                                 </div>
-                                <input type="range" class="form-range" min="0" max="2.0" step="0.01" x-model.number="simState.ki_temp" @input="runStepTest()">
+                                <input type="range" class="form-range" min="0" max="3.0" step="0.01" x-model.number="simState.ki_temp" @input="runStepTest()">
                             </div>
                         </div>
                         <div class="input-group input-group-sm mt-1">
@@ -769,7 +778,7 @@
             <div class="col-12 col-lg-6">
                 <div class="card panel-card rounded-3 h-100">
                     <div class="card-header bg-transparent border-secondary-subtle py-2 small fw-semibold text-info">
-                        Malha Simulada · Vazão (kg/h) & Controlador u₁ (V)
+                        Malha Simulada · Vazão (kg/h) &amp; Controlador u₁ (V)
                     </div>
                     <div class="card-body py-2"><div class="chart-box"><canvas id="simFlowChart"></canvas></div></div>
                 </div>
@@ -777,7 +786,7 @@
             <div class="col-12 col-lg-6">
                 <div class="card panel-card rounded-3 h-100">
                     <div class="card-header bg-transparent border-secondary-subtle py-2 small fw-semibold text-warning">
-                        Malha Simulada · Temperatura (°C) & Controlador u₂ (V)
+                        Malha Simulada · Temperatura (°C) &amp; Controlador u₂ (V)
                     </div>
                     <div class="card-body py-2"><div class="chart-box"><canvas id="simTempChart"></canvas></div></div>
                 </div>
@@ -817,10 +826,10 @@
                     {{-- Envelopes de domínio (Digital vs Físico) --}}
                     <rect x="12" y="12" width="435" height="232" rx="10" fill="rgba(56,189,248,0.04)" stroke="#38bdf8" stroke-dasharray="6,4" stroke-opacity="0.45"/>
                     <text x="24" y="30" fill="#7dd3fc" font-size="11" font-weight="600"
-                          x-text="activeTab === 'real' ? 'DOMÍNIO DIGITAL · ESP32 / MATLAB + LARAVEL' : 'DOMÍNIO DIGITAL · SOMBRA DIGITAL (100 Hz)'"></text>
+                          x-text="activeTab === 'real' ? 'DOMÍNIO DIGITAL · MATLAB NI-6003 / ESP32 + LARAVEL' : 'DOMÍNIO DIGITAL · SOMBRA DIGITAL (100 Hz)'"></text>
 
                     <rect x="655" y="12" width="372" height="232" rx="10" fill="rgba(251,146,60,0.04)" stroke="#fb923c" stroke-dasharray="6,4" stroke-opacity="0.45"/>
-                    <text x="668" y="30" fill="#fdba74" font-size="11" font-weight="600">PLANTA FÍSICA · KIT ELWE LTR701</text>
+                    <text x="668" y="30" fill="#fdba74" font-size="11" font-weight="600">PLANTA FÍSICA · KIT ELWE LTR701 (KIT 001)</text>
 
                     {{-- Entrada Setpoint --}}
                     <g class="svg-block" @click="selectedBlock = 'sp'">
@@ -866,13 +875,13 @@
                     <g class="svg-block" @click="selectedBlock = 'cond'">
                         <rect x="482" y="56" width="156" height="148" rx="8" fill="#172554"
                               :stroke="selectedBlock === 'cond' ? '#38bdf8' : '#3b82f6'" stroke-width="2"/>
-                        <text x="560" y="78" text-anchor="middle" fill="#bfdbfe" font-size="11" font-weight="700">CONDICIONAMENTO</text>
-                        <text x="560" y="96" text-anchor="middle" fill="#93c5fd" font-size="10">Saída: GPIO25 → LM741</text>
-                        <text x="560" y="111" text-anchor="middle" fill="#e2e8f0" font-size="10" font-family="monospace">0–3 V → 0–10 V</text>
+                        <text x="560" y="78" text-anchor="middle" fill="#bfdbfe" font-size="11" font-weight="700">INTERFACE 0–10 V</text>
+                        <text x="560" y="96" text-anchor="middle" fill="#93c5fd" font-size="10">NI-USB-6003 (Direto)</text>
+                        <text x="560" y="111" text-anchor="middle" fill="#e2e8f0" font-size="10" font-family="monospace">AO0/AO1 · 0–9.5 V</text>
                         <line x1="498" y1="128" x2="622" y2="128" stroke="#3b82f6" stroke-dasharray="3,3"/>
-                        <text x="560" y="148" text-anchor="middle" fill="#93c5fd" font-size="10">Entrada: Divisor → GPIO34</text>
-                        <text x="560" y="163" text-anchor="middle" fill="#e2e8f0" font-size="10" font-family="monospace">0–10 V → 0–3 V</text>
-                        <text x="560" y="186" text-anchor="middle" fill="#94a3b8" font-size="9">(ou Placa NI 6003 direto)</text>
+                        <text x="560" y="148" text-anchor="middle" fill="#93c5fd" font-size="10">Entradas SingleEnded</text>
+                        <text x="560" y="163" text-anchor="middle" fill="#e2e8f0" font-size="10" font-family="monospace">AI0/AI1 · 0–10 V</text>
+                        <text x="560" y="186" text-anchor="middle" fill="#94a3b8" font-size="9">(ou ESP32 + LM741/Divisor)</text>
                     </g>
 
                     {{-- Seta Condicionamento -> Planta --}}
@@ -891,7 +900,7 @@
                         <text x="782" y="75" text-anchor="middle" fill="#fdba74" font-size="11" font-weight="700"
                               x-text="diagramLoop === 'flow' ? 'ACTUATOR 1 + DUTO' : 'ACTUATOR 2 + DUTO'"></text>
                         <text x="782" y="94" text-anchor="middle" fill="#e2e8f0" font-size="10" font-family="monospace"
-                              x-text="diagramLoop === 'flow' ? 'G(s) = 19.16 / (s²+4.564s+1.902)' : 'G(s) ≈ K_t / (τ(Q)·s + 1)'"></text>
+                              x-text="diagramLoop === 'flow' ? 'G(s) = 19.16 / (s²+4.564s+1.902)' : 'G(s) = 0.8896 / (s + 0.1939)'"></text>
                         <text x="782" y="114" text-anchor="middle" fill="#94a3b8" font-size="10" font-family="monospace"
                               x-text="'τ = ' + fmt(diag().tau, 3) + ' s'"></text>
                     </g>
@@ -945,17 +954,20 @@
         </div>
     </div>
 
-    {{-- Logs de Auditoria (Exclusivo Admin) --}}
-    @if (auth()->user()->role === 'admin')
+    {{-- Logs de Auditoria (Exclusivo Admin / Modo Local) --}}
+    @if ($isAdmin)
     <div class="card panel-card rounded-3">
         <div class="card-header bg-transparent border-secondary-subtle d-flex justify-content-between align-items-center py-2">
-            <span class="fw-semibold text-danger-emphasis small">Logs de Auditoria Criptografados (Exclusivo Admin · Apenas Aba Real)</span>
+            <span class="fw-semibold text-danger-emphasis small">Logs de Auditoria &amp; Comandos (Apenas Aba Real)</span>
             <button type="button" class="btn btn-outline-danger btn-sm" @click="fetchLogs()">Atualizar</button>
         </div>
         <div class="table-responsive" style="max-height: 200px;">
             <table class="table table-dark table-striped table-sm align-middle mb-0 small">
                 <thead><tr><th>Data/Hora</th><th>Usuário</th><th>IP</th><th>Ação</th></tr></thead>
                 <tbody>
+                    <template x-if="logs.length === 0">
+                        <tr><td colspan="4" class="text-center text-secondary py-2">Nenhum comando registrado ainda.</td></tr>
+                    </template>
                     <template x-for="log in logs" :key="log.id">
                         <tr>
                             <td class="text-nowrap text-secondary" x-text="log.ts"></td>
@@ -986,7 +998,7 @@ function ltr701App() {
     let simUnifiedChart = null, simFlowChart = null, simTempChart = null;
     let stepRespChart = null, stepCtrlChart = null;
 
-    const isAdmin = @json(auth()->user()->role === 'admin');
+    const isAdmin = @json($isAdmin);
     const csrf    = document.querySelector('meta[name="csrf-token"]').content;
     const debounceTimers = {};
 
@@ -1010,7 +1022,7 @@ function ltr701App() {
         latestReal: null,
         realDisplay: {
             flow: null, temp: null, velocity: null, pressurePa: null, pressureAtm: null,
-            density: null, tauFlow: 0.964, tauTemp: 2.500, uFlow: null, uTemp: null, device: ''
+            density: null, tauFlow: 0.964, tauTemp: 5.157, uFlow: null, uTemp: null, device: ''
         },
         realState: {
             enable_flow: false, setpoint_flow: 50, kp_flow: 0.166, ki_flow: 0.276, calib_flow: '3.94 * exp(0.617 * x)',
@@ -1042,14 +1054,14 @@ function ltr701App() {
         simTimer: null,
         simDisplay: {
             flow: 0, temp: 22, velocity: 0, pressurePa: 0, pressureAtm: 1.0,
-            density: 1.196, tauFlow: 0.964, tauTemp: 8.333, uFlow: 0, uTemp: 0
+            density: 1.196, tauFlow: 0.964, tauTemp: 5.157, uFlow: 0, uTemp: 0
         },
         simState: {
             enable_flow: true, setpoint_flow: 50, kp_flow: 0.166, ki_flow: 0.276, calib_flow: '3.94 * exp(0.617 * x)',
             enable_temp: true, setpoint_temp: 40, kp_temp: 0.800, ki_temp: 0.300, calib_temp: '10.4 * x + 0.0795'
         },
         simPhys: { flow: 0, temp: 22.0, iFlow: 0, iTemp: 0, uFlow: 0, uTemp: 0 },
-        simModel: { kFlow: 9.778, tauFlow: 0.964, kTemp: 8.5, cThBase: 2.5, tAmb: 22.0, noiseScale: 1.0 },
+        simModel: { kFlow: 9.778, tauFlow: 0.964, kTemp: 4.588, cThBase: 5.157, tAmb: 22.0, noiseScale: 1.0 },
         freqTune: { wcg: 3.0, pm: 80 },
         stepTest: {
             loop: 'flow', b0: 19.16, a2: 1.0, a1: 4.564, a0: 1.902,
@@ -1071,7 +1083,7 @@ function ltr701App() {
             // Displays numéricos: atualização fixa em 1 Hz (1000 ms) para leitura estável
             setInterval(() => this.syncDisplays(), 1000);
 
-            // Polling Wi-Fi Real em 2 Hz (500 ms) para fluidez nos gráficos
+            // Polling Wi-Fi / REST Real em 2 Hz (500 ms) para fluidez nos gráficos
             setInterval(() => {
                 if (this.activeTab === 'real' && !this.selectedBoardKey.startsWith('usb:')) {
                     this.fetchRealHistory(false);
@@ -1130,10 +1142,10 @@ function ltr701App() {
                 const id = this.selectedBoardKey.slice(5);
                 const dev = this.wifiDevices.find(d => d.device_id === id);
                 if (!dev) return `Placa ${id} selecionada`;
-                return dev.online ? `Conectado via Wi-Fi · ${dev.device_id} (${dev.ip})` : `Placa ${dev.device_id} offline (último sinal há ${dev.age_sec}s)`;
+                return dev.online ? `Conectado via REST · ${dev.device_id} (${dev.ip})` : `Placa ${dev.device_id} offline (último sinal há ${dev.age_sec}s)`;
             }
             const onlineCount = this.wifiDevices.filter(d => d.online).length + (this.usb.connected ? 1 : 0);
-            return onlineCount > 0 ? `${onlineCount} placa(s) ativa(s) detectada(s)` : 'Nenhuma placa conectada — selecione USB ou inicie o ESP32 Wi-Fi';
+            return onlineCount > 0 ? `${onlineCount} placa(s) ativa(s) detectada(s)` : 'Nenhuma placa conectada — inicie o script MATLAB (NI-6003) ou conecte USB';
         },
 
         activeDeviceParam() {
@@ -1262,7 +1274,6 @@ function ltr701App() {
             this.latestReal = reading;
             this.updateChartSet(realUnifiedChart, realFlowChart, realTempChart, this.realReadings, this.realState);
 
-            // Persiste no MySQL a cada 1 segundo para não saturar requisições
             const nowMs = Date.now();
             if (nowMs - this.usb.lastPersistMs >= 1000) {
                 this.usb.lastPersistMs = nowMs;
@@ -1304,7 +1315,6 @@ function ltr701App() {
         },
 
         async sendRealCommand(name, value, showToast = false) {
-            // Se uma placa USB estiver ativa, envia direto pela porta serial também
             if (this.usb.connected && this.selectedBoardKey.startsWith('usb:')) {
                 await this.writeUsbCommand(`${name}=${value}`);
             }
@@ -1360,7 +1370,7 @@ function ltr701App() {
             } else {
                 this.simRunning = true;
                 this.stepSimEngine();
-                this.simTimer = setInterval(() => this.stepSimEngine(), 500); // 2 pts/s
+                this.simTimer = setInterval(() => this.stepSimEngine(), 500);
             }
         },
 
@@ -1399,13 +1409,12 @@ function ltr701App() {
 
         stepSimEngine() {
             const subSteps = 10;
-            const dt = 0.05; // 10 * 50 ms = 500 ms (2 Hz)
+            const dt = 0.05;
             const m = this.simModel;
             const st = this.simState;
             let { flow: q, temp: t, iFlow, iTemp, uFlow, uTemp } = this.simPhys;
 
             for (let s = 0; s < subSteps; s++) {
-                // Controlador PI Vazão
                 if (st.enable_flow) {
                     const errF = st.setpoint_flow - q;
                     const iCand = iFlow + st.ki_flow * errF * dt;
@@ -1416,7 +1425,6 @@ function ltr701App() {
                     iFlow = 0; uFlow = 0;
                 }
 
-                // Controlador PI Temperatura
                 if (st.enable_temp) {
                     const errT = st.setpoint_temp - t;
                     const iCand = iTemp + st.ki_temp * errT * dt;
@@ -1427,7 +1435,6 @@ function ltr701App() {
                     iTemp = 0; uTemp = 0;
                 }
 
-                // Acoplamento físico (densidade + convecção forçada)
                 const rhoRatio = (m.tAmb + 273.15) / (Math.max(10, t) + 273.15);
                 const qTarget  = m.kFlow * uFlow * Math.sqrt(rhoRatio);
                 q = Math.max(0, q + ((qTarget - q) / Math.max(0.1, m.tauFlow)) * dt);
@@ -1439,7 +1446,6 @@ function ltr701App() {
 
             this.simPhys = { flow: q, temp: t, iFlow, iTemp, uFlow, uTemp };
 
-            // Ruído realista (suave em ambiente, maior sob aquecimento/fluxo)
             const ns = Math.max(0, Number(m.noiseScale) || 0);
             const flowSigma = (q > 0.2 ? (0.045 + 0.0075 * q) : 0.012) * ns;
             const tempSigma = ((uTemp > 0.1 || t > m.tAmb + 1.5) ? (0.045 + 0.013 * uTemp + 0.0015 * q) : 0.032) * ns;
@@ -1501,7 +1507,7 @@ function ltr701App() {
             if (loop === 'flow') {
                 Object.assign(this.stepTest, { b0: 19.16, a2: 1.0, a1: 4.564, a0: 1.902, tFinal: 15, y0: 0, sp1: 50, sp2: 80, tSp2: 10, pert: 10, tPert: 5 });
             } else {
-                Object.assign(this.stepTest, { b0: 2.0, a2: 0.0, a1: 1.0, a0: 0.4, tFinal: 30, y0: 25, sp1: 35, sp2: 30, tSp2: 20, pert: 2, tPert: 15 });
+                Object.assign(this.stepTest, { b0: 0.8896, a2: 0.0, a1: 1.0, a0: 0.1939, tFinal: 30, y0: 25, sp1: 35, sp2: 30, tSp2: 20, pert: 2, tPert: 15 });
             }
             this.runStepTest();
         },
@@ -1577,7 +1583,7 @@ function ltr701App() {
             return {
                 unit: '°C', sp: st.setpoint_temp, pv, err: st.setpoint_temp - pv,
                 kp: st.kp_temp, ki: st.ki_temp, enabled: st.enable_temp,
-                u: dsp.uTemp ?? 0, tau: dsp.tauTemp ?? 2.5, calib: st.calib_temp
+                u: dsp.uTemp ?? 0, tau: dsp.tauTemp ?? 5.157, calib: st.calib_temp
             };
         },
 
@@ -1586,7 +1592,7 @@ function ltr701App() {
             const map = {
                 sp: {
                     title: 'Referência / Setpoint (SP)',
-                    desc: `Alvo atual: ${this.fmt(d.sp, 3)} ${d.unit}. Se o valor medido não convergir para o SP, verifique a saturação em 0–10 V e a calibração do sensor.`,
+                    desc: `Alvo atual: ${this.fmt(d.sp, 3)} ${d.unit}. Se o valor medido não convergir para o SP, verifique a saturação em 0–9,5 V e a calibração do sensor.`,
                     ref: 'LCON-I · Malha Fechada'
                 },
                 pi: {
@@ -1595,20 +1601,20 @@ function ltr701App() {
                     ref: 'Ativ. 08, 09 e 11'
                 },
                 cond: {
-                    title: 'Condicionamento de Sinais (0–10 V ↔ 0–3 V)',
-                    desc: 'Na saída do ESP32 (GPIO 25), o amplificador não-inversor LM741 amplia 3 V para 10 V (ganho 1 + Rf/R). Na entrada (GPIO 34), o potenciômetro divisor reduz 10 V para 3 V.',
-                    ref: 'Ativ. 08 e 09 · Parte A'
+                    title: 'Interface de Sinais (NI-USB-6003 0–10 V / ESP32)',
+                    desc: 'Com a placa NI-USB-6003, a conexão ao Kit LTR701 é direta em 0–10 V (AI0=S2, AI1=S5, AO0=ACT2, AO1=ACT1). Com ESP32, exige divisor 10V→3V e LM741 3V→10V.',
+                    ref: 'Ativ. 07, 09 e 11'
                 },
                 plant: {
-                    title: 'Planta Física · Kit ELWE LTR701',
+                    title: 'Planta Física · Kit ELWE LTR701 (Kit 001)',
                     desc: this.diagramLoop === 'flow'
                         ? 'Modelo 2ª ordem (fit 92,07%): G(s) = 19,16 / (s² + 4,564s + 1,902). Perturbação física via válvula manual na entrada.'
-                        : 'Aquecedor (ACTUATOR 2) acoplado à vazão do ventilador (ACTUATOR 1). A constante de tempo térmica τ cai quando a vazão aumenta.',
+                        : 'Modelo 1ª ordem (fit 87,48%): G(s) = 0,8896 / (s + 0,1939), τ = 5,157 s. A constante térmica cai quando a vazão aumenta.',
                     ref: this.diagramLoop === 'flow' ? 'Ativ. 10 · Parte C' : 'Ativ. 07 · Parte C'
                 },
                 sensor: {
                     title: 'Sensor, Equação de Calibração f(x) & Filtro Digital',
-                    desc: `Fórmula ativa: y = ${d.calib}. Na malha de temperatura aplica-se filtro passa-baixas digital (fc = 12,5 Hz) antes de calcular o erro. Divergência fixa em relação ao display do kit indica ajuste no divisor ou na fórmula f(x).`,
+                    desc: `Fórmula ativa: y = ${d.calib}. Aplica-se filtro passa-baixas digital (fc = 12,5 Hz) antes de calcular o erro. Divergência fixa em relação ao display do kit indica ajuste na fórmula f(x) ou aterramento AI GND.`,
                     ref: this.diagramLoop === 'flow' ? 'Ativ. 10 · Parte A' : 'Ativ. 07 · Parte A'
                 }
             };

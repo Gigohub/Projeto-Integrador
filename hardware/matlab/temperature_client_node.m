@@ -8,7 +8,7 @@ clear;
 clc;
 
 %% --- 1. CONFIGURAÇÕES DE REDE E SERVIDOR LARAVEL ---
-server_url = "http://127.0.0.1:8000/api"; % Troque pelo IPv4 do servidor se rodar em outro PC
+server_url = "http://127.0.0.1:8000"; % Troque pelo IPv4 do servidor se rodar em outro PC
 device_id  = "MATLAB-NI6003";
 api_token  = "token_do_dispositivo";      % DEVE bater com DEVICE_API_TOKEN no web/.env
 
@@ -28,7 +28,7 @@ http_options = weboptions( ...
 
 %% --- 2. CONFIGURAÇÃO DA PLACA NI-USB-6003 ---
 % Rode daqlist("ni") no Command Window se não tiver certeza do ID ("Dev1", "Dev2"...)
-dev_name = "Dev1";
+dev_name = "Dev3";
 fprintf("[INIT] Inicializando NI-USB-6003 (%s)...\n", dev_name);
 
 try
