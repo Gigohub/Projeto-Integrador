@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="google" content="notranslate">
     <meta name="csrf-token" content="{{ csrf_token() }}">
-    <title>Supervisório LTR701 · Planta Real &amp; Sombra Digital</title>
+    <title>Supervisório LTR701 · Controle de Temperatura</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
     <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.14.8/dist/cdn.min.js"></script>
@@ -22,16 +22,7 @@
             border: 1px solid rgba(167, 139, 250, 0.5);
         }
 
-        /* Largura fixa tabular: até 4 inteiros + '.' + 3 decimais sem trepidação lateral */
         .num-fixed {
-            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-            font-variant-numeric: tabular-nums;
-            display: inline-block;
-            min-width: 8.5ch;
-            text-align: right;
-            white-space: nowrap;
-        }
-        .num-fixed-sm {
             font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
             font-variant-numeric: tabular-nums;
             display: inline-block;
@@ -39,35 +30,29 @@
             text-align: right;
             white-space: nowrap;
         }
-
-        .kpi-value { font-size: 1.5rem; font-weight: 700; line-height: 1.15; }
-        .chart-box-lg { position: relative; height: 300px; width: 100%; }
-        .chart-box    { position: relative; height: 255px; width: 100%; }
-        .chart-box-sm { position: relative; height: 180px; width: 100%; }
-        .serial-console {
-            font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-            font-size: 0.78rem;
-            background: #020617;
-            color: #86efac;
-            height: 145px;
-            overflow-y: auto;
+        .num-fixed-sm {
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+            font-variant-numeric: tabular-nums;
+            display: inline-block;
+            min-width: 6.5ch;
+            text-align: right;
+            white-space: nowrap;
         }
 
-        /* Blocos interativos do SVG */
-        .svg-block { cursor: pointer; transition: filter 0.15s ease, opacity 0.15s ease; }
+        .kpi-value    { font-size: 1.55rem; font-weight: 700; line-height: 1.15; }
+        .chart-box-lg { position: relative; height: 310px; width: 100%; }
+        .chart-box    { position: relative; height: 245px; width: 100%; }
+        .chart-box-sm { position: relative; height: 185px; width: 100%; }
+
+        .svg-block { cursor: pointer; transition: filter 0.15s ease; }
         .svg-block:hover { filter: brightness(1.18); }
 
-        .status-dot {
-            display: inline-block;
-            width: 9px;
-            height: 9px;
-            border-radius: 50%;
-        }
+        .status-dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; }
         code { color: #38bdf8; }
         [x-cloak] { display: none !important; }
     </style>
 </head>
-<body x-data="ltr701App()" x-init="init()">
+<body x-data="ltr701TempApp()" x-init="init()">
 
 @php
     $userName = auth()->user()?->name ?? 'Operador Local (Tempo Real)';
@@ -80,7 +65,7 @@
     <div class="container-fluid">
         <div class="d-flex align-items-center gap-2">
             <span class="badge text-bg-warning fw-semibold">LTR701 · SCOM / LCON-I</span>
-            <span class="navbar-brand mb-0 h6 fw-bold">Supervisório Acoplado</span>
+            <span class="navbar-brand mb-0 h6 fw-bold">Controle de Temperatura</span>
         </div>
 
         <ul class="nav nav-pills mx-auto my-2 my-lg-0 bg-body-tertiary rounded-3 p-1">
@@ -89,7 +74,7 @@
                         :class="activeTab === 'real' && 'active bg-success text-white'"
                         @click="switchTab('real')">
                     <span class="status-dot" :class="isBoardOnline() ? 'bg-light' : 'bg-warning'"></span>
-                    Planta Real (Hardware)
+                    Planta Real (NI-USB-6003)
                 </button>
             </li>
             <li class="nav-item">
@@ -98,7 +83,7 @@
                         :style="activeTab === 'sim' ? 'background-color:#7c3aed;color:#fff;' : ''"
                         @click="switchTab('sim')">
                     <span class="status-dot" :class="simRunning ? 'bg-info' : 'bg-secondary'"></span>
-                    Sombra Digital (Simulação Clonada)
+                    Sombra Digital (Simulação)
                 </button>
             </li>
         </ul>
@@ -106,9 +91,7 @@
         <div class="d-flex align-items-center gap-3">
             <div class="text-end d-none d-md-block">
                 <div class="small fw-semibold lh-1">{{ $userName }}</div>
-                <span class="badge {{ $userRole === 'admin' ? 'text-bg-danger' : 'text-bg-info' }}" style="font-size: 0.65rem;">
-                    {{ strtoupper($userRole) }}
-                </span>
+                <span class="badge text-bg-secondary" style="font-size: 0.65rem;">VAZÃO FIXA NA MÁQUINA</span>
             </div>
             @auth
                 <form method="POST" action="{{ route('logout') }}" class="m-0">
@@ -131,11 +114,10 @@
     </template>
 
     {{-- ===================================================================== --}}
-    {{-- ABA 1: PLANTA REAL (HARDWARE + SELETOR DE PLACA ESTILO ARDUINO IDE)   --}}
+    {{-- ABA 1: PLANTA REAL (MATLAB + NI-USB-6003 · SOMENTE TEMPERATURA)       --}}
     {{-- ===================================================================== --}}
     <div x-show="activeTab === 'real'">
 
-        {{-- Faixa de Identificação + Seletor de Placa e Porta (Arduino IDE Style) --}}
         <div class="rounded-3 p-3 mb-3 mode-banner-real">
             <div class="d-flex flex-wrap justify-content-between align-items-center gap-3">
                 <div>
@@ -144,328 +126,188 @@
                         <span class="small text-light fw-semibold" x-text="boardStatusText()"></span>
                     </div>
                     <div class="small text-secondary mt-1">
-                        Comandos dos sliders vão direto para a placa selecionada (MATLAB NI-USB-6003, ESP32 Wi-Fi ou USB Serial) em tempo real.
+                        Controle PI de temperatura rodando a 100 Hz no MATLAB (NI-USB-6003 · AI0/AO0). Vazão mantida fixa no potenciômetro do kit.
                     </div>
                 </div>
 
-                {{-- Seletor de Placa e Porta estilo Arduino IDE --}}
                 <div class="d-flex flex-wrap align-items-center gap-2">
-                    <div class="input-group input-group-sm" style="min-width: 310px;">
-                        <span class="input-group-text bg-dark border-success text-success fw-semibold">Placa / Porta</span>
+                    <div class="input-group input-group-sm" style="min-width: 280px;">
+                        <span class="input-group-text bg-dark border-success text-success fw-semibold">Controlador</span>
                         <select class="form-select bg-dark border-success text-light"
-                                x-model="selectedBoardKey"
-                                @change="onBoardChange()">
-                            <option value="ALL">Todas as placas Wi-Fi / REST (Auto)</option>
-
-                            <optgroup label="── Portas USB (Web Serial · 115200 baud) ──">
-                                <template x-if="usb.connected">
-                                    <option :value="'usb:' + usb.deviceId" x-text="'● ' + usb.label + ' [' + usb.deviceId + '] (CONECTADA)'"></option>
-                                </template>
-                                <template x-if="!usb.connected">
-                                    <option disabled value="">Nenhuma placa USB aberta — clique em Detectar USB</option>
-                                </template>
-                            </optgroup>
-
-                            <optgroup label="── Placas na Rede (MATLAB NI-6003 / ESP32 REST) ──">
-                                <template x-if="wifiDevices.length === 0">
-                                    <option disabled value="">Nenhuma placa REST detectada ainda</option>
-                                </template>
-                                <template x-for="dev in wifiDevices" :key="dev.device_id">
-                                    <option :value="'wifi:' + dev.device_id"
-                                            x-text="(dev.online ? '● ' : '○ ') + dev.device_id + ' · ' + dev.ip + (dev.online ? ' (ONLINE)' : ' (offline há ' + dev.age_sec + 's)')">
-                                    </option>
-                                </template>
-                            </optgroup>
+                                x-model="selectedDevice"
+                                @change="fetchRealHistory(false)">
+                            <option value="ALL">MATLAB-NI6003 (Automático)</option>
+                            <template x-for="dev in devices" :key="dev.device_id">
+                                <option :value="dev.device_id"
+                                        x-text="(dev.online ? '● ' : '○ ') + dev.device_id + ' · ' + dev.ip + (dev.online ? ' (ONLINE)' : ' (offline há ' + dev.age_sec + 's)')">
+                                </option>
+                            </template>
                         </select>
                     </div>
 
-                    <button type="button" class="btn btn-sm fw-semibold"
-                            :class="usb.connected ? 'btn-outline-danger' : 'btn-success'"
-                            @click="usb.connected ? disconnectUsb() : connectUsb()"
-                            x-text="usb.connected ? 'Desconectar USB' : '+ Detectar Placa USB'"></button>
-
                     <button type="button" class="btn btn-outline-light btn-sm" @click="fetchRealHistory(false)">
-                        Atualizar Portas
+                        Atualizar
                     </button>
-
-                    <button type="button" class="btn btn-outline-info btn-sm"
-                            x-show="usb.connected"
-                            @click="usb.showMonitor = !usb.showMonitor"
-                            x-text="usb.showMonitor ? 'Ocultar Monitor Serial' : 'Monitor Serial'"></button>
-
                     <button type="button" class="btn btn-outline-secondary btn-sm"
-                            @click="exportCsv(realReadings, 'planta_real_ltr701.csv')"
+                            @click="exportCsv(realReadings, 'temperatura_real_ltr701.csv')"
                             :disabled="realReadings.length === 0">CSV Real</button>
-                </div>
-            </div>
-
-            {{-- Monitor Serial estilo Arduino IDE (quando placa USB está ativa) --}}
-            <div class="mt-3" x-show="usb.connected && usb.showMonitor" x-cloak>
-                <div class="serial-console rounded-2 p-2 border border-success-subtle" id="serialConsoleBox">
-                    <template x-if="usb.logs.length === 0">
-                        <div class="text-secondary">Aguardando dados da porta serial (115200 baud)... Aceita JSON {"flow":50,"temp":35} ou flow=50,temp=35</div>
-                    </template>
-                    <template x-for="(line, idx) in usb.logs" :key="idx">
-                        <div x-text="line"></div>
-                    </template>
-                </div>
-                <div class="input-group input-group-sm mt-2">
-                    <span class="input-group-text bg-dark text-success">TX Serial</span>
-                    <input type="text" class="form-control font-monospace" x-model="usb.manualCmd"
-                           @keydown.enter="sendManualUsb()" placeholder="Ex.: setpoint_temp=40.0 ou enable_flow=1">
-                    <button type="button" class="btn btn-success" @click="sendManualUsb()">Enviar</button>
-                    <button type="button" class="btn btn-outline-secondary" @click="usb.logs = []">Limpar</button>
                 </div>
             </div>
         </div>
 
-        {{-- 6 KPIs (Atualização fixa em 1 Hz, 3 casas decimais) --}}
+        {{-- 4 KPIs Reais (Atualização em 1 Hz) --}}
         <div class="row g-2 mb-3">
-            <div class="col-6 col-md-4 col-xl-2">
+            <div class="col-6 col-lg-3">
                 <div class="card panel-card rounded-3 h-100">
                     <div class="card-body py-2 px-3">
-                        <div class="text-secondary small">Vazão Mássica (S5)</div>
-                        <div class="kpi-value text-info">
-                            <span class="num-fixed" x-text="fmt(realDisplay.flow, 3)"></span>
-                            <span class="fs-6 text-secondary">kg/h</span>
-                        </div>
-                        <div class="small text-secondary">
-                            SP: <span class="num-fixed-sm text-warning" x-text="fmt(realState.setpoint_flow, 3)"></span>
-                        </div>
-                    </div>
-                </div>
-            </div>
-
-            <div class="col-6 col-md-4 col-xl-2">
-                <div class="card panel-card rounded-3 h-100">
-                    <div class="card-body py-2 px-3">
-                        <div class="text-secondary small">Temperatura (S2/S3)</div>
+                        <div class="text-secondary small">Temperatura Atual (SENSOR 2)</div>
                         <div class="kpi-value text-warning">
                             <span class="num-fixed" x-text="fmt(realDisplay.temp, 3)"></span>
                             <span class="fs-6 text-secondary">°C</span>
                         </div>
                         <div class="small text-secondary">
-                            SP: <span class="num-fixed-sm text-warning" x-text="fmt(realState.setpoint_temp, 3)"></span>
+                            SP: <span class="num-fixed-sm text-info" x-text="fmt(realState.setpoint_temp, 2)"></span> °C
+                            · <span class="num-fixed-sm text-light" x-text="fmt(realDisplay.tempV, 2)"></span> V
                         </div>
                     </div>
                 </div>
             </div>
 
-            <div class="col-6 col-md-4 col-xl-2">
+            <div class="col-6 col-lg-3">
                 <div class="card panel-card rounded-3 h-100">
                     <div class="card-body py-2 px-3">
-                        <div class="text-secondary small">Velocidade Real do Ar</div>
-                        <div class="kpi-value text-success">
-                            <span class="num-fixed" x-text="fmt(realDisplay.velocity, 3)"></span>
-                            <span class="fs-6 text-secondary">m/s</span>
+                        <div class="text-secondary small">Erro de Regime e(t) = SP − T</div>
+                        <div class="kpi-value" :class="Math.abs(realDisplay.error ?? 0) <= 0.5 ? 'text-success' : 'text-danger'">
+                            <span class="num-fixed" x-text="fmt(realDisplay.error, 3)"></span>
+                            <span class="fs-6 text-secondary">°C</span>
                         </div>
                         <div class="small text-secondary">
-                            ρ(T): <span class="num-fixed-sm text-light" x-text="fmt(realDisplay.density, 3)"></span> kg/m³
+                            Status: <strong :class="realState.enable_temp ? 'text-success' : 'text-danger'"
+                                            x-text="realState.enable_temp ? 'MALHA FECHADA ATIVA' : 'AQUECEDOR DESLIGADO'"></strong>
                         </div>
                     </div>
                 </div>
             </div>
 
-            <div class="col-6 col-md-4 col-xl-2">
+            <div class="col-6 col-lg-3">
                 <div class="card panel-card rounded-3 h-100">
                     <div class="card-body py-2 px-3">
-                        <div class="text-secondary small">Pressão Tubo (ΔP / Abs)</div>
-                        <div class="kpi-value text-light">
-                            <span class="num-fixed" x-text="fmt(realDisplay.pressurePa, 3)"></span>
-                            <span class="fs-6 text-secondary">Pa</span>
+                        <div class="text-secondary small">Esforço Aquecedor (AO0 · ACT 2)</div>
+                        <div class="kpi-value text-info">
+                            <span class="num-fixed" x-text="fmt(realDisplay.uTemp, 3)"></span>
+                            <span class="fs-6 text-secondary">V</span>
                         </div>
                         <div class="small text-secondary">
-                            Abs: <span class="num-fixed-sm text-info" x-text="fmt(realDisplay.pressureAtm, 3)"></span> atm
+                            Potência: <span class="num-fixed-sm text-warning" x-text="fmt(((realDisplay.uTemp ?? 0) / 10) * 100, 1)"></span> % (Saturação 9,5 V)
                         </div>
                     </div>
                 </div>
             </div>
 
-            <div class="col-6 col-md-4 col-xl-2">
+            <div class="col-6 col-lg-3">
                 <div class="card panel-card rounded-3 h-100">
                     <div class="card-body py-2 px-3">
-                        <div class="text-secondary small">Constantes de Tempo</div>
+                        <div class="text-secondary small">Dinâmica Kit 001 &amp; Rede</div>
                         <div class="small mt-1">
-                            τ Vazão: <span class="num-fixed-sm text-info fw-bold" x-text="fmt(realDisplay.tauFlow, 3)"></span> s
+                            τ Térmica: <span class="num-fixed-sm text-warning fw-bold" x-text="fmt(realDisplay.tauTemp, 3)"></span> s
                         </div>
                         <div class="small mt-1">
-                            τ Temp: <span class="num-fixed-sm text-warning fw-bold" x-text="fmt(realDisplay.tauTemp, 3)"></span> s
+                            RTT Sync: <span class="num-fixed-sm text-info fw-bold" x-text="fmt(realDisplay.rttMs, 1)"></span> ms
                         </div>
-                        <div class="text-secondary" style="font-size: 0.72rem;">Dinâmica estimada</div>
-                    </div>
-                </div>
-            </div>
-
-            <div class="col-6 col-md-4 col-xl-2">
-                <div class="card panel-card rounded-3 h-100">
-                    <div class="card-body py-2 px-3">
-                        <div class="text-secondary small">Atuadores (0–10 V)</div>
-                        <div class="small mt-1">
-                            u₁ Vent: <span class="num-fixed-sm text-info fw-bold" x-text="fmt(realDisplay.uFlow, 3)"></span> V
-                        </div>
-                        <div class="small mt-1">
-                            u₂ Aq.: <span class="num-fixed-sm text-warning fw-bold" x-text="fmt(realDisplay.uTemp, 3)"></span> V
-                        </div>
-                        <div class="text-secondary text-truncate" style="font-size: 0.72rem;">
-                            ACK pend.: <strong x-text="realState.pending_commands"></strong> · <code x-text="realDisplay.device || '---'"></code>
+                        <div class="text-secondary" style="font-size: 0.72rem;">
+                            Pend.: <strong x-text="realState.pending_commands"></strong> · <code x-text="realDisplay.device || '---'"></code>
                         </div>
                     </div>
                 </div>
             </div>
         </div>
 
-        {{-- Controles Reais Diretos via Sliders --}}
-        <div class="row g-3 mb-3">
-            <div class="col-12 col-lg-6">
-                <div class="card panel-card rounded-3 h-100 border-success-subtle">
-                    <div class="card-header bg-transparent border-secondary-subtle d-flex justify-content-between align-items-center py-2">
-                        <span class="fw-semibold text-info small">Malha 1 Real · Vazão / Ventilador (ACTUATOR 1 · SENSOR 5)</span>
-                        <div class="btn-group btn-group-sm">
-                            <button type="button" class="btn fw-semibold"
-                                    :class="realState.enable_flow ? 'btn-success' : 'btn-outline-success'"
-                                    @click="sendRealCommand('enable_flow', 1, true)">LIGAR</button>
-                            <button type="button" class="btn fw-semibold"
-                                    :class="!realState.enable_flow ? 'btn-danger' : 'btn-outline-danger'"
-                                    @click="sendRealCommand('enable_flow', 0, true)">DESLIGAR</button>
-                        </div>
-                    </div>
-                    <div class="card-body py-2 px-3 d-flex flex-column gap-2">
-                        <div>
-                            <div class="d-flex justify-content-between align-items-center small">
-                                <span class="text-secondary">Setpoint Vazão (envio direto)</span>
-                                <span class="text-info fw-bold"><span class="num-fixed-sm" x-text="fmt(realForm.spFlow, 3)"></span> kg/h</span>
-                            </div>
-                            <input type="range" class="form-range" min="0" max="110" step="0.5"
-                                   x-model.number="realForm.spFlow"
-                                   @input="queueRealSlider('setpoint_flow', realForm.spFlow)">
-                        </div>
-                        <div class="row g-2">
-                            <div class="col-6">
-                                <div class="d-flex justify-content-between small">
-                                    <span class="text-secondary">Kp Vazão</span>
-                                    <span class="text-info fw-semibold num-fixed-sm" x-text="fmt(realForm.kpFlow, 3)"></span>
-                                </div>
-                                <input type="range" class="form-range" min="0" max="1.5" step="0.005"
-                                       x-model.number="realForm.kpFlow"
-                                       @input="queueRealSlider('kp_flow', realForm.kpFlow)">
-                            </div>
-                            <div class="col-6">
-                                <div class="d-flex justify-content-between small">
-                                    <span class="text-secondary">Ki Vazão</span>
-                                    <span class="text-info fw-semibold num-fixed-sm" x-text="fmt(realForm.kiFlow, 3)"></span>
-                                </div>
-                                <input type="range" class="form-range" min="0" max="2.0" step="0.005"
-                                       x-model.number="realForm.kiFlow"
-                                       @input="queueRealSlider('ki_flow', realForm.kiFlow)">
-                            </div>
-                        </div>
-                        <div class="input-group input-group-sm mt-1">
-                            <span class="input-group-text small">Calib. S5 f(x)</span>
-                            <input type="text" class="form-control font-monospace" x-model="realForm.calibFlow">
-                            <button type="button" class="btn btn-outline-info" @click="sendRealCommand('calib_flow', realForm.calibFlow, true)">Salvar</button>
-                        </div>
-                    </div>
-                </div>
-            </div>
-
-            <div class="col-12 col-lg-6">
-                <div class="card panel-card rounded-3 h-100 border-success-subtle">
-                    <div class="card-header bg-transparent border-secondary-subtle d-flex justify-content-between align-items-center py-2">
-                        <span class="fw-semibold text-warning small">Malha 2 Real · Temperatura / Aquecedor (ACTUATOR 2 · SENSOR 2/3)</span>
-                        <div class="btn-group btn-group-sm">
-                            <button type="button" class="btn fw-semibold"
-                                    :class="realState.enable_temp ? 'btn-success' : 'btn-outline-success'"
-                                    @click="sendRealCommand('enable_temp', 1, true)">LIGAR</button>
-                            <button type="button" class="btn fw-semibold"
-                                    :class="!realState.enable_temp ? 'btn-danger' : 'btn-outline-danger'"
-                                    @click="sendRealCommand('enable_temp', 0, true)">DESLIGAR</button>
-                        </div>
-                    </div>
-                    <div class="card-body py-2 px-3 d-flex flex-column gap-2">
-                        <div>
-                            <div class="d-flex justify-content-between align-items-center small">
-                                <span class="text-secondary">Setpoint Temperatura (envio direto)</span>
-                                <span class="text-warning fw-bold"><span class="num-fixed-sm" x-text="fmt(realForm.spTemp, 3)"></span> °C</span>
-                            </div>
-                            <input type="range" class="form-range" min="20" max="85" step="0.5"
-                                   x-model.number="realForm.spTemp"
-                                   @input="queueRealSlider('setpoint_temp', realForm.spTemp)">
-                        </div>
-                        <div class="row g-2">
-                            <div class="col-6">
-                                <div class="d-flex justify-content-between small">
-                                    <span class="text-secondary">Kp Temp.</span>
-                                    <span class="text-warning fw-semibold num-fixed-sm" x-text="fmt(realForm.kpTemp, 3)"></span>
-                                </div>
-                                <input type="range" class="form-range" min="0" max="10.0" step="0.05"
-                                       x-model.number="realForm.kpTemp"
-                                       @input="queueRealSlider('kp_temp', realForm.kpTemp)">
-                            </div>
-                            <div class="col-6">
-                                <div class="d-flex justify-content-between small">
-                                    <span class="text-secondary">Ki Temp.</span>
-                                    <span class="text-warning fw-semibold num-fixed-sm" x-text="fmt(realForm.kiTemp, 3)"></span>
-                                </div>
-                                <input type="range" class="form-range" min="0" max="3.0" step="0.01"
-                                       x-model.number="realForm.kiTemp"
-                                       @input="queueRealSlider('ki_temp', realForm.kiTemp)">
-                            </div>
-                        </div>
-                        <div class="input-group input-group-sm mt-1">
-                            <span class="input-group-text small">Calib. S2 f(x)</span>
-                            <input type="text" class="form-control font-monospace" x-model="realForm.calibTemp">
-                            <button type="button" class="btn btn-outline-warning" @click="sendRealCommand('calib_temp', realForm.calibTemp, true)">Salvar</button>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </div>
-
-        {{-- 3 Gráficos da Planta Real --}}
-        <div class="card panel-card rounded-3 mb-3">
+        {{-- Painel de Controle PI de Temperatura (Real) --}}
+        <div class="card panel-card rounded-3 mb-3 border-success-subtle">
             <div class="card-header bg-transparent border-secondary-subtle d-flex justify-content-between align-items-center py-2">
-                <span class="fw-semibold small text-success">Gráfico Unificado Real · Vazão × Temperatura × u₁ / u₂ (2 Hz)</span>
-                <span class="small text-secondary" x-show="realReadings.length === 0">Conecte o MATLAB (NI-USB-6003) ou ESP32 para plotar dados reais</span>
-            </div>
-            <div class="card-body py-2"><div class="chart-box-lg"><canvas id="realUnifiedChart"></canvas></div></div>
-        </div>
-
-        <div class="row g-3 mb-3">
-            <div class="col-12 col-lg-6">
-                <div class="card panel-card rounded-3 h-100">
-                    <div class="card-header bg-transparent border-secondary-subtle py-2 small fw-semibold text-info">
-                        Malha Real · Vazão (kg/h) &amp; Controlador u₁ (V)
-                    </div>
-                    <div class="card-body py-2"><div class="chart-box"><canvas id="realFlowChart"></canvas></div></div>
+                <span class="fw-semibold text-warning small">Controlador PI Digital · Malha de Temperatura (ACTUATOR 2 / AO0 · SENSOR 2 / AI0)</span>
+                <div class="btn-group btn-group-sm">
+                    <button type="button" class="btn fw-semibold"
+                            :class="realState.enable_temp ? 'btn-success' : 'btn-outline-success'"
+                            @click="sendRealCommand('enable_temp', 1, true)">LIGAR AQUECEDOR</button>
+                    <button type="button" class="btn fw-semibold"
+                            :class="!realState.enable_temp ? 'btn-danger' : 'btn-outline-danger'"
+                            @click="sendRealCommand('enable_temp', 0, true)">DESLIGAR</button>
                 </div>
             </div>
-            <div class="col-12 col-lg-6">
-                <div class="card panel-card rounded-3 h-100">
-                    <div class="card-header bg-transparent border-secondary-subtle py-2 small fw-semibold text-warning">
-                        Malha Real · Temperatura (°C) &amp; Controlador u₂ (V)
+            <div class="card-body py-3 px-3">
+                <div class="row g-3 align-items-center">
+                    <div class="col-12 col-lg-4">
+                        <div class="d-flex justify-content-between small">
+                            <span class="text-secondary">Setpoint Temperatura</span>
+                            <span class="text-warning fw-bold"><span class="num-fixed-sm" x-text="fmt(realForm.spTemp, 1)"></span> °C</span>
+                        </div>
+                        <input type="range" class="form-range" min="20" max="85" step="0.5"
+                               x-model.number="realForm.spTemp"
+                               @input="queueRealSlider('setpoint_temp', realForm.spTemp)">
                     </div>
-                    <div class="card-body py-2"><div class="chart-box"><canvas id="realTempChart"></canvas></div></div>
+
+                    <div class="col-6 col-lg-4">
+                        <div class="d-flex justify-content-between small">
+                            <span class="text-secondary">Ganho Proporcional (Kp)</span>
+                            <span class="text-info fw-semibold num-fixed-sm" x-text="fmt(realForm.kpTemp, 3)"></span>
+                        </div>
+                        <input type="range" class="form-range" min="0" max="10.0" step="0.05"
+                               x-model.number="realForm.kpTemp"
+                               @input="queueRealSlider('kp_temp', realForm.kpTemp)">
+                    </div>
+
+                    <div class="col-6 col-lg-4">
+                        <div class="d-flex justify-content-between small">
+                            <span class="text-secondary">Ganho Integral (Ki)</span>
+                            <span class="text-info fw-semibold num-fixed-sm" x-text="fmt(realForm.kiTemp, 3)"></span>
+                        </div>
+                        <input type="range" class="form-range" min="0" max="3.0" step="0.01"
+                               x-model.number="realForm.kiTemp"
+                               @input="queueRealSlider('ki_temp', realForm.kiTemp)">
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        {{-- Gráficos da Planta Real --}}
+        <div class="row g-3 mb-3">
+            <div class="col-12 col-lg-8">
+                <div class="card panel-card rounded-3 h-100">
+                    <div class="card-header bg-transparent border-secondary-subtle d-flex justify-content-between align-items-center py-2">
+                        <span class="fw-semibold small text-warning">Malha Real · Temperatura (°C), Setpoint e Sinal de Controle u(t) [V]</span>
+                        <span class="small text-secondary" x-show="realReadings.length === 0">Aguardando MATLAB (POST /api/sync)</span>
+                    </div>
+                    <div class="card-body py-2"><div class="chart-box-lg"><canvas id="realTempChart"></canvas></div></div>
+                </div>
+            </div>
+
+            <div class="col-12 col-lg-4">
+                <div class="card panel-card rounded-3 h-100">
+                    <div class="card-header bg-transparent border-secondary-subtle py-2 small fw-semibold text-danger">
+                        Erro em Tempo Real · e(t) = SP − T (°C)
+                    </div>
+                    <div class="card-body py-2"><div class="chart-box-lg"><canvas id="realErrorChart"></canvas></div></div>
                 </div>
             </div>
         </div>
     </div>
 
     {{-- ===================================================================== --}}
-    {{-- ABA 2: SOMBRA DIGITAL (CLONE EXATO DA ABA REAL — 100% ISOLADO)        --}}
+    {{-- ABA 2: SOMBRA DIGITAL (SIMULAÇÃO ISOLADA DE TEMPERATURA · KIT 001)    --}}
     {{-- ===================================================================== --}}
     <div x-show="activeTab === 'sim'" x-cloak>
 
-        {{-- Faixa Roxa de Identificação Clara da Sombra Digital --}}
         <div class="rounded-3 p-3 mb-3 mode-banner-sim">
             <div class="d-flex flex-wrap justify-content-between align-items-center gap-3">
                 <div>
                     <div class="d-flex align-items-center gap-2">
                         <span class="badge fw-bold" style="background-color:#7c3aed;">MODO SOMBRA DIGITAL · ISOLADO</span>
                         <span class="small text-light fw-semibold"
-                              x-text="simRunning ? 'Simulação Acoplada Rodando (2 Hz Gráficos · 1 Hz Displays)' : 'Simulação Pausada'"></span>
+                              x-text="simRunning ? 'Simulação Térmica Rodando (Kit 001 · G_T(s) = 0.8896 / (s + 0.1939))' : 'Simulação Pausada'"></span>
                     </div>
                     <div class="small text-secondary mt-1">
-                        Clone exato da aba real rodando localmente no navegador. Nenhuma alteração de SP, Kp, Ki ou planta é enviada ao MATLAB/ESP32.
+                        Simulação 100% local no navegador. Nenhum comando desta aba interfere no MATLAB ou na NI-USB-6003.
                     </div>
                 </div>
 
@@ -473,100 +315,66 @@
                     <button type="button" class="btn btn-sm fw-semibold"
                             :class="simRunning ? 'btn-warning' : 'btn-info text-dark'"
                             @click="toggleSimEngine()"
-                            x-text="simRunning ? 'Pausar Sombra Digital' : 'Iniciar Sombra Digital (2 Hz)'"></button>
+                            x-text="simRunning ? 'Pausar Sombra' : 'Iniciar Sombra Digital'"></button>
 
-                    <button type="button" class="btn btn-outline-warning btn-sm" @click="injectPerturbation('flow', -15)">
-                        Perturb. Válvula (-15 kg/h)
-                    </button>
-                    <button type="button" class="btn btn-outline-danger btn-sm" @click="injectPerturbation('temp', -3)">
-                        Perturb. Térmica (-3 °C)
+                    <button type="button" class="btn btn-outline-danger btn-sm" @click="injectTempPerturbation(-4)">
+                        Perturb. Térmica (−4 °C)
                     </button>
                     <button type="button" class="btn btn-outline-light btn-sm" @click="resetSimEngine()">
-                        Resetar (22°C / 0 kg/h)
+                        Resetar (22 °C)
                     </button>
                     <button type="button" class="btn btn-outline-secondary btn-sm"
                             @click="simDrawerOpen = !simDrawerOpen"
-                            x-text="simDrawerOpen ? 'Ocultar Modelo G(s) & Ensaio' : '⚙ Configurar Planta G(s) & Ensaio'"></button>
+                            x-text="simDrawerOpen ? 'Ocultar Modelo & Ensaio' : '⚙ Modelo G_T(s) & Ensaio Degrau'"></button>
                     <button type="button" class="btn btn-outline-secondary btn-sm"
-                            @click="exportCsv(simReadings, 'sombra_digital_ltr701.csv')"
+                            @click="exportCsv(simReadings, 'sombra_temperatura_ltr701.csv')"
                             :disabled="simReadings.length === 0">CSV Sim.</button>
                 </div>
             </div>
 
-            {{-- Gaveta Recolhível: Parâmetros da Planta + Ensaio em Degrau (LCON-I) --}}
+            {{-- Gaveta: Parâmetros da Planta + Ensaio em Degrau (Tustin 100 Hz) --}}
             <div class="mt-3 pt-3 border-top border-secondary-subtle" x-show="simDrawerOpen" x-cloak>
                 <div class="row g-3">
-                    <div class="col-12 col-lg-5">
+                    <div class="col-12 col-lg-4">
                         <div class="card panel-card rounded-3 h-100">
                             <div class="card-header bg-transparent border-secondary-subtle py-2 small fw-semibold">
-                                Parâmetros Físicos da Sombra Digital (Kit 001 · Tempo Real)
+                                Modelo Térmico Kit 001 · G_T(s) = b₀ / (s + a₀)
                             </div>
                             <div class="card-body py-2 small">
                                 <div class="row g-2">
                                     <div class="col-6">
-                                        <label class="text-secondary">Ganho Vazão K_q [(kg/h)/V]</label>
-                                        <input type="number" step="0.1" class="form-control form-control-sm" x-model.number="simModel.kFlow">
+                                        <label class="text-secondary">Numerador b₀</label>
+                                        <input type="number" step="0.001" class="form-control form-control-sm" x-model.number="simModel.b0" @input="runStepTest()">
                                     </div>
                                     <div class="col-6">
-                                        <label class="text-secondary">Constante τ_vazão (s)</label>
-                                        <input type="number" step="0.05" min="0.1" class="form-control form-control-sm" x-model.number="simModel.tauFlow">
-                                    </div>
-                                    <div class="col-6">
-                                        <label class="text-secondary">Ganho Térmico K_t [°C/V]</label>
-                                        <input type="number" step="0.1" class="form-control form-control-sm" x-model.number="simModel.kTemp">
-                                    </div>
-                                    <div class="col-6">
-                                        <label class="text-secondary">Cap. Térmica Base τ_t0 (s)</label>
-                                        <input type="number" step="0.1" min="0.2" class="form-control form-control-sm" x-model.number="simModel.cThBase">
+                                        <label class="text-secondary">Polo a₀ (= 1/τ)</label>
+                                        <input type="number" step="0.001" min="0.01" class="form-control form-control-sm" x-model.number="simModel.a0" @input="runStepTest()">
                                     </div>
                                     <div class="col-6">
                                         <label class="text-secondary">Temp. Ambiente (°C)</label>
                                         <input type="number" step="0.5" class="form-control form-control-sm" x-model.number="simModel.tAmb">
                                     </div>
                                     <div class="col-6">
-                                        <label class="text-secondary">Fator de Ruído (0 a 3x)</label>
+                                        <label class="text-secondary">Ruído Sensor (0 a 3x)</label>
                                         <input type="number" step="0.1" min="0" max="3" class="form-control form-control-sm" x-model.number="simModel.noiseScale">
-                                    </div>
-                                </div>
-                                <div class="mt-2 pt-2 border-top border-secondary-subtle">
-                                    <label class="text-secondary mb-1">Sintonizador Rápido (Roteiro 11 · ω_cg e pm → Vazão)</label>
-                                    <div class="row g-2 align-items-center">
-                                        <div class="col-5">
-                                            <span class="text-secondary">ω_cg: <strong x-text="fmt(freqTune.wcg, 1)"></strong> rad/s</span>
-                                            <input type="range" class="form-range" min="0.5" max="12" step="0.5" x-model.number="freqTune.wcg" @input="applyFreqTuning()">
-                                        </div>
-                                        <div class="col-5">
-                                            <span class="text-secondary">pm: <strong x-text="freqTune.pm"></strong>°</span>
-                                            <input type="range" class="form-range" min="20" max="95" step="1" x-model.number="freqTune.pm" @input="applyFreqTuning()">
-                                        </div>
-                                        <div class="col-2 text-end">
-                                            <button type="button" class="btn btn-outline-info btn-sm" @click="applyFreqTuning()">OK</button>
-                                        </div>
                                     </div>
                                 </div>
                             </div>
                         </div>
                     </div>
 
-                    {{-- Ensaio Determinístico em Degrau (Ativ. 11 / Projeto Integrador) --}}
-                    <div class="col-12 col-lg-7">
+                    <div class="col-12 col-lg-8">
                         <div class="card panel-card rounded-3 h-100">
-                            <div class="card-header bg-transparent border-secondary-subtle py-2 d-flex justify-content-between align-items-center">
-                                <span class="small fw-semibold">Ensaio Programado de Malha Fechada (Tustin 100 Hz · LCON-I)</span>
-                                <div class="btn-group btn-group-sm">
-                                    <button type="button" class="btn" :class="stepTest.loop === 'flow' ? 'btn-info text-dark fw-semibold' : 'btn-outline-info'"
-                                            @click="loadStepPreset('flow')">Vazão G_Q(s)</button>
-                                    <button type="button" class="btn" :class="stepTest.loop === 'temp' ? 'btn-warning text-dark fw-semibold' : 'btn-outline-warning'"
-                                            @click="loadStepPreset('temp')">Temp. G_T(s)</button>
-                                </div>
+                            <div class="card-header bg-transparent border-secondary-subtle py-2 small fw-semibold">
+                                Ensaio Determinístico em Degrau (Tustin 100 Hz · Usa Kp e Ki da Sombra)
                             </div>
                             <div class="card-body py-2 small">
                                 <div class="row g-2 mb-2">
                                     <div class="col-2"><label class="text-secondary">t_f (s)</label><input type="number" class="form-control form-control-sm" x-model.number="stepTest.tFinal" @input="runStepTest()"></div>
-                                    <div class="col-2"><label class="text-secondary">y₀</label><input type="number" class="form-control form-control-sm" x-model.number="stepTest.y0" @input="runStepTest()"></div>
-                                    <div class="col-2"><label class="text-secondary">SP 1</label><input type="number" class="form-control form-control-sm" x-model.number="stepTest.sp1" @input="runStepTest()"></div>
-                                    <div class="col-2"><label class="text-secondary">SP 2</label><input type="number" class="form-control form-control-sm" x-model.number="stepTest.sp2" @input="runStepTest()"></div>
-                                    <div class="col-2"><label class="text-secondary">t_SP2</label><input type="number" class="form-control form-control-sm" x-model.number="stepTest.tSp2" @input="runStepTest()"></div>
+                                    <div class="col-2"><label class="text-secondary">T₀ (°C)</label><input type="number" class="form-control form-control-sm" x-model.number="stepTest.y0" @input="runStepTest()"></div>
+                                    <div class="col-2"><label class="text-secondary">SP 1 (°C)</label><input type="number" class="form-control form-control-sm" x-model.number="stepTest.sp1" @input="runStepTest()"></div>
+                                    <div class="col-2"><label class="text-secondary">SP 2 (°C)</label><input type="number" class="form-control form-control-sm" x-model.number="stepTest.sp2" @input="runStepTest()"></div>
+                                    <div class="col-2"><label class="text-secondary">t_SP2 (s)</label><input type="number" class="form-control form-control-sm" x-model.number="stepTest.tSp2" @input="runStepTest()"></div>
                                     <div class="col-2"><label class="text-secondary">Pert (t=<span x-text="stepTest.tPert"></span>s)</label><input type="number" class="form-control form-control-sm" x-model.number="stepTest.pert" @input="runStepTest()"></div>
                                 </div>
                                 <div class="row g-2">
@@ -580,240 +388,147 @@
             </div>
         </div>
 
-        {{-- 6 KPIs Clonados (Atualização fixa em 1 Hz, 3 casas decimais) --}}
+        {{-- 4 KPIs Simulados --}}
         <div class="row g-2 mb-3">
-            <div class="col-6 col-md-4 col-xl-2">
+            <div class="col-6 col-lg-3">
                 <div class="card panel-card rounded-3 h-100">
                     <div class="card-body py-2 px-3">
-                        <div class="text-secondary small">Vazão Mássica (Sim)</div>
-                        <div class="kpi-value text-info">
-                            <span class="num-fixed" x-text="fmt(simDisplay.flow, 3)"></span>
-                            <span class="fs-6 text-secondary">kg/h</span>
-                        </div>
-                        <div class="small text-secondary">
-                            SP: <span class="num-fixed-sm text-warning" x-text="fmt(simState.setpoint_flow, 3)"></span>
-                        </div>
-                    </div>
-                </div>
-            </div>
-
-            <div class="col-6 col-md-4 col-xl-2">
-                <div class="card panel-card rounded-3 h-100">
-                    <div class="card-body py-2 px-3">
-                        <div class="text-secondary small">Temperatura (Sim)</div>
+                        <div class="text-secondary small">Temperatura Simulada</div>
                         <div class="kpi-value text-warning">
                             <span class="num-fixed" x-text="fmt(simDisplay.temp, 3)"></span>
                             <span class="fs-6 text-secondary">°C</span>
                         </div>
                         <div class="small text-secondary">
-                            SP: <span class="num-fixed-sm text-warning" x-text="fmt(simState.setpoint_temp, 3)"></span>
+                            SP: <span class="num-fixed-sm text-info" x-text="fmt(simState.setpoint_temp, 2)"></span> °C
                         </div>
                     </div>
                 </div>
             </div>
 
-            <div class="col-6 col-md-4 col-xl-2">
+            <div class="col-6 col-lg-3">
                 <div class="card panel-card rounded-3 h-100">
                     <div class="card-body py-2 px-3">
-                        <div class="text-secondary small">Velocidade Real do Ar</div>
-                        <div class="kpi-value text-success">
-                            <span class="num-fixed" x-text="fmt(simDisplay.velocity, 3)"></span>
-                            <span class="fs-6 text-secondary">m/s</span>
+                        <div class="text-secondary small">Erro Simulado e(t)</div>
+                        <div class="kpi-value" :class="Math.abs(simDisplay.error ?? 0) <= 0.5 ? 'text-success' : 'text-danger'">
+                            <span class="num-fixed" x-text="fmt(simDisplay.error, 3)"></span>
+                            <span class="fs-6 text-secondary">°C</span>
                         </div>
                         <div class="small text-secondary">
-                            ρ(T): <span class="num-fixed-sm text-light" x-text="fmt(simDisplay.density, 3)"></span> kg/m³
+                            Status: <strong :class="simState.enable_temp ? 'text-success' : 'text-danger'"
+                                            x-text="simState.enable_temp ? 'ATIVO' : 'DESLIGADO'"></strong>
                         </div>
                     </div>
                 </div>
             </div>
 
-            <div class="col-6 col-md-4 col-xl-2">
+            <div class="col-6 col-lg-3">
                 <div class="card panel-card rounded-3 h-100">
                     <div class="card-body py-2 px-3">
-                        <div class="text-secondary small">Pressão Tubo (ΔP / Abs)</div>
+                        <div class="text-secondary small">Esforço Simulado u(t)</div>
+                        <div class="kpi-value text-info">
+                            <span class="num-fixed" x-text="fmt(simDisplay.uTemp, 3)"></span>
+                            <span class="fs-6 text-secondary">V</span>
+                        </div>
+                        <div class="small text-secondary">
+                            Potência: <span class="num-fixed-sm text-warning" x-text="fmt(((simDisplay.uTemp ?? 0) / 10) * 100, 1)"></span> %
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="col-6 col-lg-3">
+                <div class="card panel-card rounded-3 h-100">
+                    <div class="card-body py-2 px-3">
+                        <div class="text-secondary small">Constante Térmica (1/a₀)</div>
                         <div class="kpi-value text-light">
-                            <span class="num-fixed" x-text="fmt(simDisplay.pressurePa, 3)"></span>
-                            <span class="fs-6 text-secondary">Pa</span>
+                            <span class="num-fixed" x-text="fmt(1 / Math.max(0.01, simModel.a0), 3)"></span>
+                            <span class="fs-6 text-secondary">s</span>
                         </div>
-                        <div class="small text-secondary">
-                            Abs: <span class="num-fixed-sm text-info" x-text="fmt(simDisplay.pressureAtm, 3)"></span> atm
-                        </div>
-                    </div>
-                </div>
-            </div>
-
-            <div class="col-6 col-md-4 col-xl-2">
-                <div class="card panel-card rounded-3 h-100">
-                    <div class="card-body py-2 px-3">
-                        <div class="text-secondary small">Constantes de Tempo</div>
-                        <div class="small mt-1">
-                            τ Vazão: <span class="num-fixed-sm text-info fw-bold" x-text="fmt(simDisplay.tauFlow, 3)"></span> s
-                        </div>
-                        <div class="small mt-1">
-                            τ Temp: <span class="num-fixed-sm text-warning fw-bold" x-text="fmt(simDisplay.tauTemp, 3)"></span> s
-                        </div>
-                        <div class="text-secondary" style="font-size: 0.72rem;">τ_temp varia com vazão</div>
-                    </div>
-                </div>
-            </div>
-
-            <div class="col-6 col-md-4 col-xl-2">
-                <div class="card panel-card rounded-3 h-100">
-                    <div class="card-body py-2 px-3">
-                        <div class="text-secondary small">Atuadores (0–10 V)</div>
-                        <div class="small mt-1">
-                            u₁ Vent: <span class="num-fixed-sm text-info fw-bold" x-text="fmt(simDisplay.uFlow, 3)"></span> V
-                        </div>
-                        <div class="small mt-1">
-                            u₂ Aq.: <span class="num-fixed-sm text-warning fw-bold" x-text="fmt(simDisplay.uTemp, 3)"></span> V
-                        </div>
-                        <div class="text-secondary" style="font-size: 0.72rem;">Fonte: <code>SOMBRA-LOCAL</code></div>
+                        <div class="small text-secondary">Fonte: <code>SOMBRA-LOCAL</code></div>
                     </div>
                 </div>
             </div>
         </div>
 
-        {{-- Controles Clonados (100% locais na Sombra Digital) --}}
+        {{-- Controles Simulados --}}
+        <div class="card panel-card rounded-3 mb-3" style="border-color: rgba(167,139,250,0.35);">
+            <div class="card-header bg-transparent border-secondary-subtle d-flex justify-content-between align-items-center py-2">
+                <span class="fw-semibold text-warning small">Controlador PI Simulado · Temperatura (Isolado)</span>
+                <div class="btn-group btn-group-sm">
+                    <button type="button" class="btn fw-semibold"
+                            :class="simState.enable_temp ? 'btn-success' : 'btn-outline-success'"
+                            @click="simState.enable_temp = true">LIGAR</button>
+                    <button type="button" class="btn fw-semibold"
+                            :class="!simState.enable_temp ? 'btn-danger' : 'btn-outline-danger'"
+                            @click="simState.enable_temp = false; simPhys.iTemp = 0">DESLIGAR</button>
+                </div>
+            </div>
+            <div class="card-body py-3 px-3">
+                <div class="row g-3 align-items-center">
+                    <div class="col-12 col-lg-4">
+                        <div class="d-flex justify-content-between small">
+                            <span class="text-secondary">Setpoint Temperatura (simulado)</span>
+                            <span class="text-warning fw-bold"><span class="num-fixed-sm" x-text="fmt(simState.setpoint_temp, 1)"></span> °C</span>
+                        </div>
+                        <input type="range" class="form-range" min="20" max="85" step="0.5" x-model.number="simState.setpoint_temp">
+                    </div>
+
+                    <div class="col-6 col-lg-4">
+                        <div class="d-flex justify-content-between small">
+                            <span class="text-secondary">Kp Temp.</span>
+                            <span class="text-info fw-semibold num-fixed-sm" x-text="fmt(simState.kp_temp, 3)"></span>
+                        </div>
+                        <input type="range" class="form-range" min="0" max="10.0" step="0.05" x-model.number="simState.kp_temp" @input="runStepTest()">
+                    </div>
+
+                    <div class="col-6 col-lg-4">
+                        <div class="d-flex justify-content-between small">
+                            <span class="text-secondary">Ki Temp.</span>
+                            <span class="text-info fw-semibold num-fixed-sm" x-text="fmt(simState.ki_temp, 3)"></span>
+                        </div>
+                        <input type="range" class="form-range" min="0" max="3.0" step="0.01" x-model.number="simState.ki_temp" @input="runStepTest()">
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        {{-- Gráficos da Sombra Digital --}}
         <div class="row g-3 mb-3">
-            <div class="col-12 col-lg-6">
-                <div class="card panel-card rounded-3 h-100" style="border-color: rgba(167,139,250,0.35);">
-                    <div class="card-header bg-transparent border-secondary-subtle d-flex justify-content-between align-items-center py-2">
-                        <span class="fw-semibold text-info small">Malha 1 Simulada · Vazão / Ventilador (Isolado)</span>
-                        <div class="btn-group btn-group-sm">
-                            <button type="button" class="btn fw-semibold"
-                                    :class="simState.enable_flow ? 'btn-success' : 'btn-outline-success'"
-                                    @click="simState.enable_flow = true">LIGAR</button>
-                            <button type="button" class="btn fw-semibold"
-                                    :class="!simState.enable_flow ? 'btn-danger' : 'btn-outline-danger'"
-                                    @click="simState.enable_flow = false; simPhys.iFlow = 0">DESLIGAR</button>
-                        </div>
-                    </div>
-                    <div class="card-body py-2 px-3 d-flex flex-column gap-2">
-                        <div>
-                            <div class="d-flex justify-content-between align-items-center small">
-                                <span class="text-secondary">Setpoint Vazão (simulado)</span>
-                                <span class="text-info fw-bold"><span class="num-fixed-sm" x-text="fmt(simState.setpoint_flow, 3)"></span> kg/h</span>
-                            </div>
-                            <input type="range" class="form-range" min="0" max="110" step="0.5" x-model.number="simState.setpoint_flow">
-                        </div>
-                        <div class="row g-2">
-                            <div class="col-6">
-                                <div class="d-flex justify-content-between small">
-                                    <span class="text-secondary">Kp Vazão</span>
-                                    <span class="text-info fw-semibold num-fixed-sm" x-text="fmt(simState.kp_flow, 3)"></span>
-                                </div>
-                                <input type="range" class="form-range" min="0" max="1.5" step="0.005" x-model.number="simState.kp_flow" @input="runStepTest()">
-                            </div>
-                            <div class="col-6">
-                                <div class="d-flex justify-content-between small">
-                                    <span class="text-secondary">Ki Vazão</span>
-                                    <span class="text-info fw-semibold num-fixed-sm" x-text="fmt(simState.ki_flow, 3)"></span>
-                                </div>
-                                <input type="range" class="form-range" min="0" max="2.0" step="0.005" x-model.number="simState.ki_flow" @input="runStepTest()">
-                            </div>
-                        </div>
-                        <div class="input-group input-group-sm mt-1">
-                            <span class="input-group-text small">Calib. S5 f(x)</span>
-                            <input type="text" class="form-control font-monospace" x-model="simState.calib_flow">
-                        </div>
-                    </div>
-                </div>
-            </div>
-
-            <div class="col-12 col-lg-6">
-                <div class="card panel-card rounded-3 h-100" style="border-color: rgba(167,139,250,0.35);">
-                    <div class="card-header bg-transparent border-secondary-subtle d-flex justify-content-between align-items-center py-2">
-                        <span class="fw-semibold text-warning small">Malha 2 Simulada · Temperatura / Aquecedor (Isolado)</span>
-                        <div class="btn-group btn-group-sm">
-                            <button type="button" class="btn fw-semibold"
-                                    :class="simState.enable_temp ? 'btn-success' : 'btn-outline-success'"
-                                    @click="simState.enable_temp = true">LIGAR</button>
-                            <button type="button" class="btn fw-semibold"
-                                    :class="!simState.enable_temp ? 'btn-danger' : 'btn-outline-danger'"
-                                    @click="simState.enable_temp = false; simPhys.iTemp = 0">DESLIGAR</button>
-                        </div>
-                    </div>
-                    <div class="card-body py-2 px-3 d-flex flex-column gap-2">
-                        <div>
-                            <div class="d-flex justify-content-between align-items-center small">
-                                <span class="text-secondary">Setpoint Temperatura (simulado)</span>
-                                <span class="text-warning fw-bold"><span class="num-fixed-sm" x-text="fmt(simState.setpoint_temp, 3)"></span> °C</span>
-                            </div>
-                            <input type="range" class="form-range" min="20" max="85" step="0.5" x-model.number="simState.setpoint_temp">
-                        </div>
-                        <div class="row g-2">
-                            <div class="col-6">
-                                <div class="d-flex justify-content-between small">
-                                    <span class="text-secondary">Kp Temp.</span>
-                                    <span class="text-warning fw-semibold num-fixed-sm" x-text="fmt(simState.kp_temp, 3)"></span>
-                                </div>
-                                <input type="range" class="form-range" min="0" max="10.0" step="0.05" x-model.number="simState.kp_temp" @input="runStepTest()">
-                            </div>
-                            <div class="col-6">
-                                <div class="d-flex justify-content-between small">
-                                    <span class="text-secondary">Ki Temp.</span>
-                                    <span class="text-warning fw-semibold num-fixed-sm" x-text="fmt(simState.ki_temp, 3)"></span>
-                                </div>
-                                <input type="range" class="form-range" min="0" max="3.0" step="0.01" x-model.number="simState.ki_temp" @input="runStepTest()">
-                            </div>
-                        </div>
-                        <div class="input-group input-group-sm mt-1">
-                            <span class="input-group-text small">Calib. S2 f(x)</span>
-                            <input type="text" class="form-control font-monospace" x-model="simState.calib_temp">
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </div>
-
-        {{-- 3 Gráficos Clonados da Sombra Digital --}}
-        <div class="card panel-card rounded-3 mb-3">
-            <div class="card-header bg-transparent border-secondary-subtle py-2 small fw-semibold" style="color:#c4b5fd;">
-                Gráfico Unificado · Sombra Digital Acoplada (Vazão × Temperatura × u₁ / u₂ · 2 Hz)
-            </div>
-            <div class="card-body py-2"><div class="chart-box-lg"><canvas id="simUnifiedChart"></canvas></div></div>
-        </div>
-
-        <div class="row g-3 mb-3">
-            <div class="col-12 col-lg-6">
+            <div class="col-12 col-lg-8">
                 <div class="card panel-card rounded-3 h-100">
-                    <div class="card-header bg-transparent border-secondary-subtle py-2 small fw-semibold text-info">
-                        Malha Simulada · Vazão (kg/h) &amp; Controlador u₁ (V)
+                    <div class="card-header bg-transparent border-secondary-subtle py-2 small fw-semibold" style="color:#c4b5fd;">
+                        Sombra Digital · Temperatura (°C), Setpoint e Controle u(t) [V]
                     </div>
-                    <div class="card-body py-2"><div class="chart-box"><canvas id="simFlowChart"></canvas></div></div>
+                    <div class="card-body py-2"><div class="chart-box-lg"><canvas id="simTempChart"></canvas></div></div>
                 </div>
             </div>
-            <div class="col-12 col-lg-6">
+
+            <div class="col-12 col-lg-4">
                 <div class="card panel-card rounded-3 h-100">
-                    <div class="card-header bg-transparent border-secondary-subtle py-2 small fw-semibold text-warning">
-                        Malha Simulada · Temperatura (°C) &amp; Controlador u₂ (V)
+                    <div class="card-header bg-transparent border-secondary-subtle py-2 small fw-semibold text-danger">
+                        Erro Simulado · e(t) = SP − T (°C)
                     </div>
-                    <div class="card-body py-2"><div class="chart-box"><canvas id="simTempChart"></canvas></div></div>
+                    <div class="card-body py-2"><div class="chart-box-lg"><canvas id="simErrorChart"></canvas></div></div>
                 </div>
             </div>
         </div>
     </div>
 
     {{-- ===================================================================== --}}
-    {{-- DIAGRAMA DE BLOCOS SVG INTERATIVO (COMPARTILHADO — REFLETE ABA ATIVA) --}}
+    {{-- DIAGRAMA DE BLOCOS SVG INTERATIVO (MALHA DE TEMPERATURA)              --}}
     {{-- ===================================================================== --}}
     <div class="card panel-card rounded-3 mb-3">
         <div class="card-header bg-transparent border-secondary-subtle d-flex flex-wrap justify-content-between align-items-center gap-2 py-2">
             <div class="d-flex align-items-center gap-2">
-                <span class="fw-semibold small">Diagrama de Blocos Interativo da Malha Fechada (LCON-I · Clique nos blocos)</span>
+                <span class="fw-semibold small">Diagrama de Blocos · Malha Fechada de Temperatura (Clique nos blocos)</span>
                 <span class="badge" :class="activeTab === 'real' ? 'text-bg-success' : 'text-bg-primary'"
                       x-text="activeTab === 'real' ? 'Valores: Planta Real' : 'Valores: Sombra Digital'"></span>
             </div>
-            <div class="btn-group btn-group-sm">
-                <button type="button" class="btn" :class="diagramLoop === 'flow' ? 'btn-info text-dark fw-semibold' : 'btn-outline-info'"
-                        @click="diagramLoop = 'flow'">Malha de Vazão (S5 / ACT 1)</button>
-                <button type="button" class="btn" :class="diagramLoop === 'temp' ? 'btn-warning text-dark fw-semibold' : 'btn-outline-warning'"
-                        @click="diagramLoop = 'temp'">Malha de Temperatura (S2 / ACT 2)</button>
-            </div>
+            <span class="small text-secondary">Vazão de ar mantida fixa manualmente no Kit LTR701</span>
         </div>
         <div class="card-body py-3">
             <div class="w-100 overflow-auto">
-                <svg viewBox="0 0 1040 255" class="w-100" style="min-width: 820px; max-height: 265px;">
+                <svg viewBox="0 0 1040 255" class="w-100" style="min-width: 820px; max-height: 260px;">
                     <defs>
                         <marker id="arrowBlue" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
                             <path d="M 0 1 L 10 5 L 0 9 z" fill="#38bdf8"/>
@@ -823,24 +538,22 @@
                         </marker>
                     </defs>
 
-                    {{-- Envelopes de domínio (Digital vs Físico) --}}
                     <rect x="12" y="12" width="435" height="232" rx="10" fill="rgba(56,189,248,0.04)" stroke="#38bdf8" stroke-dasharray="6,4" stroke-opacity="0.45"/>
                     <text x="24" y="30" fill="#7dd3fc" font-size="11" font-weight="600"
-                          x-text="activeTab === 'real' ? 'DOMÍNIO DIGITAL · MATLAB NI-6003 / ESP32 + LARAVEL' : 'DOMÍNIO DIGITAL · SOMBRA DIGITAL (100 Hz)'"></text>
+                          x-text="activeTab === 'real' ? 'DOMÍNIO DIGITAL · MATLAB (100 Hz) + SITE LARAVEL' : 'DOMÍNIO DIGITAL · SOMBRA DIGITAL (100 Hz)'"></text>
 
                     <rect x="655" y="12" width="372" height="232" rx="10" fill="rgba(251,146,60,0.04)" stroke="#fb923c" stroke-dasharray="6,4" stroke-opacity="0.45"/>
                     <text x="668" y="30" fill="#fdba74" font-size="11" font-weight="600">PLANTA FÍSICA · KIT ELWE LTR701 (KIT 001)</text>
 
-                    {{-- Entrada Setpoint --}}
+                    {{-- Setpoint --}}
                     <g class="svg-block" @click="selectedBlock = 'sp'">
                         <rect x="22" y="68" width="96" height="52" rx="8" fill="#1e293b"
                               :stroke="selectedBlock === 'sp' ? '#facc15' : '#475569'" stroke-width="2"/>
                         <text x="70" y="88" text-anchor="middle" fill="#94a3b8" font-size="10">SETPOINT (SP)</text>
                         <text x="70" y="108" text-anchor="middle" fill="#facc15" font-size="13" font-weight="700" font-family="monospace"
-                              x-text="fmt(diag().sp, 2) + ' ' + diag().unit"></text>
+                              x-text="fmt(diag().sp, 1) + ' °C'"></text>
                     </g>
 
-                    {{-- Seta SP -> Somador --}}
                     <line x1="118" y1="94" x2="152" y2="94" stroke="#38bdf8" stroke-width="2" marker-end="url(#arrowBlue)"/>
 
                     {{-- Somador --}}
@@ -848,12 +561,11 @@
                     <text x="163" y="92" fill="#e2e8f0" font-size="12" font-weight="700">+</text>
                     <text x="175" y="108" fill="#f87171" font-size="13" font-weight="700">−</text>
 
-                    {{-- Seta Erro -> Controlador --}}
                     <line x1="190" y1="94" x2="246" y2="94" stroke="#38bdf8" stroke-width="2" marker-end="url(#arrowBlue)"/>
                     <text x="218" y="84" text-anchor="middle" fill="#f87171" font-size="10" font-family="monospace"
                           x-text="'e=' + fmt(diag().err, 2)"></text>
 
-                    {{-- Bloco Controlador PI Digital --}}
+                    {{-- Controlador PI --}}
                     <g class="svg-block" @click="selectedBlock = 'pi'">
                         <rect x="250" y="56" width="182" height="76" rx="8" fill="#1e293b"
                               :stroke="selectedBlock === 'pi' ? '#22c55e' : (diag().enabled ? '#38bdf8' : '#ef4444')" stroke-width="2.2"/>
@@ -866,41 +578,36 @@
                               x-text="diag().enabled ? '● HABILITADO' : '○ DESLIGADO (i=0)'"></text>
                     </g>
 
-                    {{-- Seta PI -> Condicionamento --}}
                     <line x1="432" y1="94" x2="478" y2="94" stroke="#38bdf8" stroke-width="2" marker-end="url(#arrowBlue)"/>
                     <text x="455" y="84" text-anchor="middle" fill="#f59e0b" font-size="10" font-family="monospace"
                           x-text="fmt(diag().u, 2) + 'V'"></text>
 
-                    {{-- Bloco Condicionamento de Sinais --}}
-                    <g class="svg-block" @click="selectedBlock = 'cond'">
+                    {{-- Interface NI-USB-6003 --}}
+                    <g class="svg-block" @click="selectedBlock = 'daq'">
                         <rect x="482" y="56" width="156" height="148" rx="8" fill="#172554"
-                              :stroke="selectedBlock === 'cond' ? '#38bdf8' : '#3b82f6'" stroke-width="2"/>
-                        <text x="560" y="78" text-anchor="middle" fill="#bfdbfe" font-size="11" font-weight="700">INTERFACE 0–10 V</text>
-                        <text x="560" y="96" text-anchor="middle" fill="#93c5fd" font-size="10">NI-USB-6003 (Direto)</text>
-                        <text x="560" y="111" text-anchor="middle" fill="#e2e8f0" font-size="10" font-family="monospace">AO0/AO1 · 0–9.5 V</text>
-                        <line x1="498" y1="128" x2="622" y2="128" stroke="#3b82f6" stroke-dasharray="3,3"/>
-                        <text x="560" y="148" text-anchor="middle" fill="#93c5fd" font-size="10">Entradas SingleEnded</text>
-                        <text x="560" y="163" text-anchor="middle" fill="#e2e8f0" font-size="10" font-family="monospace">AI0/AI1 · 0–10 V</text>
-                        <text x="560" y="186" text-anchor="middle" fill="#94a3b8" font-size="9">(ou ESP32 + LM741/Divisor)</text>
+                              :stroke="selectedBlock === 'daq' ? '#38bdf8' : '#3b82f6'" stroke-width="2"/>
+                        <text x="560" y="78" text-anchor="middle" fill="#bfdbfe" font-size="11" font-weight="700">NI-USB-6003 (Dev3)</text>
+                        <text x="560" y="98" text-anchor="middle" fill="#93c5fd" font-size="10">Saída Analógica AO0</text>
+                        <text x="560" y="113" text-anchor="middle" fill="#e2e8f0" font-size="10" font-family="monospace">0–9.5 V → ACT 2</text>
+                        <line x1="498" y1="130" x2="622" y2="130" stroke="#3b82f6" stroke-dasharray="3,3"/>
+                        <text x="560" y="150" text-anchor="middle" fill="#93c5fd" font-size="10">Entrada SingleEnded AI0</text>
+                        <text x="560" y="165" text-anchor="middle" fill="#e2e8f0" font-size="10" font-family="monospace">SENSOR 2 → 0–10 V</text>
+                        <text x="560" y="188" text-anchor="middle" fill="#94a3b8" font-size="9">Acoplamento direto 0–10 V</text>
                     </g>
 
-                    {{-- Seta Condicionamento -> Planta --}}
                     <line x1="638" y1="94" x2="682" y2="94" stroke="#f59e0b" stroke-width="2" marker-end="url(#arrowWarn)"/>
-                    <text x="660" y="84" text-anchor="middle" fill="#fdba74" font-size="10">0–10 V</text>
+                    <text x="660" y="84" text-anchor="middle" fill="#fdba74" font-size="10">0–9.5 V</text>
 
-                    {{-- Seta Perturbação (de cima para a Planta) --}}
+                    {{-- Perturbação (Vazão fixa/válvula) --}}
                     <line x1="782" y1="36" x2="782" y2="54" stroke="#ef4444" stroke-width="2" marker-end="url(#arrowWarn)"/>
-                    <text x="855" y="45" fill="#fca5a5" font-size="10"
-                          x-text="diagramLoop === 'flow' ? 'Perturbação (Válvula manual)' : 'Perturbação (Vazão de ar)'"></text>
+                    <text x="855" y="45" fill="#fca5a5" font-size="10">Vazão fixa / Válvula manual</text>
 
-                    {{-- Bloco Planta Física G(s) --}}
+                    {{-- Planta Física --}}
                     <g class="svg-block" @click="selectedBlock = 'plant'">
                         <rect x="686" y="56" width="192" height="76" rx="8" fill="#1e293b"
                               :stroke="selectedBlock === 'plant' ? '#fb923c' : '#ea580c'" stroke-width="2.2"/>
-                        <text x="782" y="75" text-anchor="middle" fill="#fdba74" font-size="11" font-weight="700"
-                              x-text="diagramLoop === 'flow' ? 'ACTUATOR 1 + DUTO' : 'ACTUATOR 2 + DUTO'"></text>
-                        <text x="782" y="94" text-anchor="middle" fill="#e2e8f0" font-size="10" font-family="monospace"
-                              x-text="diagramLoop === 'flow' ? 'G(s) = 19.16 / (s²+4.564s+1.902)' : 'G(s) = 0.8896 / (s + 0.1939)'"></text>
+                        <text x="782" y="75" text-anchor="middle" fill="#fdba74" font-size="11" font-weight="700">ACTUATOR 2 + DUTO</text>
+                        <text x="782" y="94" text-anchor="middle" fill="#e2e8f0" font-size="10" font-family="monospace">G_T(s) = 0.8896 / (s + 0.1939)</text>
                         <text x="782" y="114" text-anchor="middle" fill="#94a3b8" font-size="10" font-family="monospace"
                               x-text="'τ = ' + fmt(diag().tau, 3) + ' s'"></text>
                     </g>
@@ -911,39 +618,37 @@
                         <rect x="918" y="68" width="98" height="52" rx="8" fill="#0f172a" stroke="#22c55e" stroke-width="2"/>
                         <text x="967" y="88" text-anchor="middle" fill="#86efac" font-size="10">SAÍDA (PV)</text>
                         <text x="967" y="108" text-anchor="middle" fill="#4ade80" font-size="13" font-weight="700" font-family="monospace"
-                              x-text="fmt(diag().pv, 2) + ' ' + diag().unit"></text>
+                              x-text="fmt(diag().pv, 2) + ' °C'"></text>
                     </g>
 
-                    {{-- Realimentação inferior: PV -> Sensor -> Condicionamento -> Calibração -> Somador --}}
+                    {{-- Realimentação --}}
                     <polyline points="896,94 896,198 878,198" fill="none" stroke="#f59e0b" stroke-width="2"/>
 
                     <g class="svg-block" @click="selectedBlock = 'sensor'">
                         <rect x="686" y="168" width="192" height="58" rx="8" fill="#1e293b"
                               :stroke="selectedBlock === 'sensor' ? '#a78bfa' : '#64748b'" stroke-width="2"/>
-                        <text x="782" y="189" text-anchor="middle" fill="#e2e8f0" font-size="11" font-weight="700"
-                              x-text="diagramLoop === 'flow' ? 'SENSOR 5 (Vazão Mássica)' : 'SENSOR 2/3 (Termopar K)'"></text>
+                        <text x="782" y="189" text-anchor="middle" fill="#e2e8f0" font-size="11" font-weight="700">SENSOR 2 (Termopar K)</text>
                         <text x="782" y="209" text-anchor="middle" fill="#94a3b8" font-size="10">Saída analógica 0...10 V</text>
                     </g>
 
                     <line x1="686" y1="198" x2="640" y2="198" stroke="#f59e0b" stroke-width="2" marker-end="url(#arrowWarn)"/>
                     <line x1="482" y1="198" x2="434" y2="198" stroke="#38bdf8" stroke-width="2" marker-end="url(#arrowBlue)"/>
 
-                    {{-- Bloco Conversão + Filtro Passa-Baixas --}}
                     <g class="svg-block" @click="selectedBlock = 'sensor'">
                         <rect x="206" y="168" width="226" height="58" rx="8" fill="#1e293b"
                               :stroke="selectedBlock === 'sensor' ? '#a78bfa' : '#38bdf8'" stroke-width="2"/>
                         <text x="319" y="187" text-anchor="middle" fill="#c4b5fd" font-size="10.5" font-weight="700">
-                            CALIBRAÇÃO f(x) + FILTRO 12,5 Hz
+                            CALIBRAÇÃO + FILTRO 12,5 Hz
                         </text>
-                        <text x="319" y="208" text-anchor="middle" fill="#38bdf8" font-size="10.5" font-family="monospace"
-                              x-text="'y = ' + diag().calib"></text>
+                        <text x="319" y="208" text-anchor="middle" fill="#38bdf8" font-size="10.5" font-family="monospace">
+                            T(V) = 10.4 · V + 0.0795
+                        </text>
                     </g>
 
                     <polyline points="206,198 172,198 172,115" fill="none" stroke="#38bdf8" stroke-width="2" marker-end="url(#arrowBlue)"/>
                 </svg>
             </div>
 
-            {{-- Inspetor Contextual do Bloco Clicado --}}
             <div class="mt-2 p-2 px-3 rounded-2 bg-dark border border-secondary-subtle small d-flex flex-wrap justify-content-between align-items-center gap-2">
                 <div>
                     <strong class="text-info" x-text="blockInfo().title + ':'"></strong>
@@ -954,11 +659,11 @@
         </div>
     </div>
 
-    {{-- Logs de Auditoria (Exclusivo Admin / Modo Local) --}}
+    {{-- Logs de Comandos --}}
     @if ($isAdmin)
     <div class="card panel-card rounded-3">
         <div class="card-header bg-transparent border-secondary-subtle d-flex justify-content-between align-items-center py-2">
-            <span class="fw-semibold text-danger-emphasis small">Logs de Auditoria &amp; Comandos (Apenas Aba Real)</span>
+            <span class="fw-semibold text-danger-emphasis small">Logs de Comandos Enviados ao MATLAB (Apenas Aba Real)</span>
             <button type="button" class="btn btn-outline-danger btn-sm" @click="fetchLogs()">Atualizar</button>
         </div>
         <div class="table-responsive" style="max-height: 200px;">
@@ -985,91 +690,44 @@
 </main>
 
 <script>
-const USB_VENDORS = {
-    0x10C4: 'ESP32 / Silicon Labs CP210x',
-    0x1A86: 'ESP32 / WCH CH340',
-    0x0403: 'FTDI USB-UART',
-    0x303A: 'Espressif Native USB-JTAG',
-    0x2341: 'Arduino USB'
-};
-
-function ltr701App() {
-    let realUnifiedChart = null, realFlowChart = null, realTempChart = null;
-    let simUnifiedChart = null, simFlowChart = null, simTempChart = null;
+function ltr701TempApp() {
+    let realTempChart = null, realErrorChart = null;
+    let simTempChart = null, simErrorChart = null;
     let stepRespChart = null, stepCtrlChart = null;
 
     const isAdmin = @json($isAdmin);
     const csrf    = document.querySelector('meta[name="csrf-token"]').content;
     const debounceTimers = {};
 
-    // Referências Web Serial (fora da reatividade do Alpine)
-    let serialPort = null;
-    let serialWriter = null;
-    let serialReader = null;
-    let serialStopFlag = false;
-
     return {
         activeTab: 'real',
-        diagramLoop: 'flow',
         selectedBlock: 'pi',
         feedback: { text: '', type: 'success' },
         logs: [],
 
-        // ---------- ESTADO DA ABA 1 (PLANTA REAL) ----------
-        selectedBoardKey: 'ALL',
-        wifiDevices: [],
+        // ---------- PLANTA REAL ----------
+        selectedDevice: 'ALL',
+        devices: [],
         realReadings: [],
         latestReal: null,
-        realDisplay: {
-            flow: null, temp: null, velocity: null, pressurePa: null, pressureAtm: null,
-            density: null, tauFlow: 0.964, tauTemp: 5.157, uFlow: null, uTemp: null, device: ''
-        },
-        realState: {
-            enable_flow: false, setpoint_flow: 50, kp_flow: 0.166, ki_flow: 0.276, calib_flow: '3.94 * exp(0.617 * x)',
-            enable_temp: false, setpoint_temp: 40, kp_temp: 0.800, ki_temp: 0.300, calib_temp: '10.4 * x + 0.0795',
-            pending_commands: 0
-        },
-        realForm: {
-            spFlow: 50, kpFlow: 0.166, kiFlow: 0.276, calibFlow: '3.94 * exp(0.617 * x)',
-            spTemp: 40, kpTemp: 0.800, kiTemp: 0.300, calibTemp: '10.4 * x + 0.0795'
-        },
+        realDisplay: { temp: null, tempV: null, uTemp: null, error: null, tauTemp: 5.157, rttMs: null, device: '' },
+        realState: { enable_temp: false, setpoint_temp: 40.0, kp_temp: 0.800, ki_temp: 0.300, pending_commands: 0 },
+        realForm: { spTemp: 40.0, kpTemp: 0.800, kiTemp: 0.300 },
 
-        // Estado USB Serial (estilo Arduino IDE)
-        usb: {
-            supported: 'serial' in navigator,
-            connected: false,
-            deviceId: 'USB-ESP32',
-            label: '',
-            showMonitor: false,
-            manualCmd: '',
-            logs: [],
-            lastPersistMs: 0
-        },
-
-        // ---------- ESTADO DA ABA 2 (SOMBRA DIGITAL — CLONE ISOLADO) ----------
+        // ---------- SOMBRA DIGITAL ----------
         simRunning: false,
         simDrawerOpen: false,
         simReadings: [],
         latestSim: null,
         simTimer: null,
-        simDisplay: {
-            flow: 0, temp: 22, velocity: 0, pressurePa: 0, pressureAtm: 1.0,
-            density: 1.196, tauFlow: 0.964, tauTemp: 5.157, uFlow: 0, uTemp: 0
-        },
-        simState: {
-            enable_flow: true, setpoint_flow: 50, kp_flow: 0.166, ki_flow: 0.276, calib_flow: '3.94 * exp(0.617 * x)',
-            enable_temp: true, setpoint_temp: 40, kp_temp: 0.800, ki_temp: 0.300, calib_temp: '10.4 * x + 0.0795'
-        },
-        simPhys: { flow: 0, temp: 22.0, iFlow: 0, iTemp: 0, uFlow: 0, uTemp: 0 },
-        simModel: { kFlow: 9.778, tauFlow: 0.964, kTemp: 4.588, cThBase: 5.157, tAmb: 22.0, noiseScale: 1.0 },
-        freqTune: { wcg: 3.0, pm: 80 },
-        stepTest: {
-            loop: 'flow', b0: 19.16, a2: 1.0, a1: 4.564, a0: 1.902,
-            tFinal: 15, y0: 0, sp1: 50, sp2: 80, tSp2: 10, pert: 10, tPert: 5
-        },
+        simDisplay: { temp: 22.0, uTemp: 0.0, error: 18.0 },
+        simState: { enable_temp: true, setpoint_temp: 40.0, kp_temp: 0.800, ki_temp: 0.300 },
+        simPhys: { temp: 22.0, iTemp: 0.0, uTemp: 0.0 },
+        simModel: { b0: 0.8896, a0: 0.1939, tAmb: 22.0, noiseScale: 1.0 },
+        stepTest: { tFinal: 30, y0: 22, sp1: 40, sp2: 35, tSp2: 20, pert: 3, tPert: 12 },
 
         fmt(val, dec = 3) {
-            if (val === null || val === undefined || isNaN(Number(val))) return '----.---';
+            if (val === null || val === undefined || isNaN(Number(val))) return '---';
             return Number(val).toFixed(dec);
         },
 
@@ -1080,34 +738,36 @@ function ltr701App() {
             if (isAdmin) await this.fetchLogs();
             this.runStepTest();
 
-            // Displays numéricos: atualização fixa em 1 Hz (1000 ms) para leitura estável
+            // Displays numéricos fixos em 1 Hz
             setInterval(() => this.syncDisplays(), 1000);
 
-            // Polling Wi-Fi / REST Real em 2 Hz (500 ms) para fluidez nos gráficos
+            // Polling da Planta Real em 1 Hz para manter o servidor Windows leve
             setInterval(() => {
-                if (this.activeTab === 'real' && !this.selectedBoardKey.startsWith('usb:')) {
+                if (this.activeTab === 'real') {
                     this.fetchRealHistory(false);
                 }
-            }, 500);
+            }, 1000);
         },
 
         syncDisplays() {
             if (this.latestReal) {
                 const r = this.latestReal;
                 this.realDisplay = {
-                    flow: r.flow, temp: r.temp, velocity: r.velocity,
-                    pressurePa: r.pressure_pa, pressureAtm: r.pressure_atm,
-                    density: r.density, tauFlow: r.tau_flow, tauTemp: r.tau_temp,
-                    uFlow: r.u_flow, uTemp: r.u_temp, device: r.device_id
+                    temp: r.temp,
+                    tempV: r.temp_v,
+                    uTemp: r.u_temp,
+                    error: r.error ?? (this.realState.setpoint_temp - r.temp),
+                    tauTemp: r.tau_temp ?? 5.157,
+                    rttMs: r.rtt_ms ?? 0,
+                    device: r.device_id
                 };
             }
             if (this.latestSim) {
                 const s = this.latestSim;
                 this.simDisplay = {
-                    flow: s.flow, temp: s.temp, velocity: s.velocity,
-                    pressurePa: s.pressure_pa, pressureAtm: s.pressure_atm,
-                    density: s.density, tauFlow: s.tau_flow, tauTemp: s.tau_temp,
-                    uFlow: s.u_flow, uTemp: s.u_temp
+                    temp: s.temp,
+                    uTemp: s.u_temp,
+                    error: s.error
                 };
             }
         },
@@ -1116,195 +776,27 @@ function ltr701App() {
             this.activeTab = tab;
             this.$nextTick(() => {
                 if (tab === 'real') {
-                    realUnifiedChart?.resize(); realFlowChart?.resize(); realTempChart?.resize();
+                    realTempChart?.resize(); realErrorChart?.resize();
                 } else {
-                    simUnifiedChart?.resize(); simFlowChart?.resize(); simTempChart?.resize();
+                    simTempChart?.resize(); simErrorChart?.resize();
                     stepRespChart?.resize(); stepCtrlChart?.resize();
                 }
             });
         },
 
-        // ---------- DETECÇÃO E STATUS DE PLACAS (ARDUINO IDE STYLE) ----------
         isBoardOnline() {
-            if (this.selectedBoardKey.startsWith('usb:')) return this.usb.connected;
-            if (this.selectedBoardKey.startsWith('wifi:')) {
-                const id = this.selectedBoardKey.slice(5);
-                return this.wifiDevices.some(d => d.device_id === id && d.online);
-            }
-            return this.usb.connected || this.wifiDevices.some(d => d.online);
+            return this.devices.some(d => d.online);
         },
 
         boardStatusText() {
-            if (this.selectedBoardKey.startsWith('usb:') && this.usb.connected) {
-                return `Conectado via USB · ${this.usb.label} (115200 baud)`;
-            }
-            if (this.selectedBoardKey.startsWith('wifi:')) {
-                const id = this.selectedBoardKey.slice(5);
-                const dev = this.wifiDevices.find(d => d.device_id === id);
-                if (!dev) return `Placa ${id} selecionada`;
-                return dev.online ? `Conectado via REST · ${dev.device_id} (${dev.ip})` : `Placa ${dev.device_id} offline (último sinal há ${dev.age_sec}s)`;
-            }
-            const onlineCount = this.wifiDevices.filter(d => d.online).length + (this.usb.connected ? 1 : 0);
-            return onlineCount > 0 ? `${onlineCount} placa(s) ativa(s) detectada(s)` : 'Nenhuma placa conectada — inicie o script MATLAB (NI-6003) ou conecte USB';
+            const online = this.devices.find(d => d.online);
+            if (online) return `Conectado · ${online.device_id} (${online.ip} · último pacote ${online.last_iso})`;
+            return 'Aguardando conexão do MATLAB (execute temperature_client_node.m)';
         },
 
-        activeDeviceParam() {
-            if (this.selectedBoardKey.startsWith('wifi:')) return this.selectedBoardKey.slice(5);
-            if (this.selectedBoardKey.startsWith('usb:')) return this.usb.deviceId;
-            return 'ALL';
-        },
-
-        onBoardChange() {
-            if (!this.selectedBoardKey.startsWith('usb:')) {
-                this.fetchRealHistory(false);
-            }
-        },
-
-        async connectUsb() {
-            if (!this.usb.supported) {
-                this.notify('Web Serial API disponível apenas no Google Chrome ou Microsoft Edge.', 'error');
-                return;
-            }
-            try {
-                serialPort = await navigator.serial.requestPort();
-                await serialPort.open({ baudRate: 115200 });
-
-                const info = serialPort.getInfo();
-                const vid  = info.usbVendorId;
-                const pid  = info.usbProductId;
-                this.usb.label    = USB_VENDORS[vid] || (vid ? `Dispositivo USB (VID 0x${vid.toString(16).toUpperCase()})` : 'Porta Serial USB');
-                this.usb.deviceId = vid ? `USB-${vid.toString(16).toUpperCase()}-${(pid || 0).toString(16).toUpperCase()}` : 'USB-ESP32';
-                this.usb.connected = true;
-                this.usb.showMonitor = true;
-                this.selectedBoardKey = 'usb:' + this.usb.deviceId;
-
-                const encoder = new TextEncoderStream();
-                encoder.readable.pipeTo(serialPort.writable);
-                serialWriter = encoder.writable.getWriter();
-
-                this.notify(`Placa detectada e conectada: ${this.usb.label}`);
-                this.readUsbLoop();
-            } catch (err) {
-                if (err.name !== 'NotFoundError') {
-                    this.notify('Erro ao abrir porta USB: ' + err.message, 'error');
-                }
-            }
-        },
-
-        async disconnectUsb() {
-            serialStopFlag = true;
-            try {
-                if (serialReader) { await serialReader.cancel(); serialReader = null; }
-                if (serialWriter) { await serialWriter.close(); serialWriter = null; }
-                if (serialPort) { await serialPort.close(); serialPort = null; }
-            } catch (e) {}
-            this.usb.connected = false;
-            this.selectedBoardKey = 'ALL';
-            this.notify('Porta USB desconectada com segurança.');
-        },
-
-        async readUsbLoop() {
-            serialStopFlag = false;
-            const decoder = new TextDecoderStream();
-            serialPort.readable.pipeTo(decoder.writable);
-            serialReader = decoder.readable.getReader();
-
-            let buffer = '';
-            try {
-                while (!serialStopFlag) {
-                    const { value, done } = await serialReader.read();
-                    if (done) break;
-                    buffer += value;
-                    const lines = buffer.split(/\r?\n/);
-                    buffer = lines.pop() || '';
-                    for (const raw of lines) {
-                        const line = raw.trim();
-                        if (!line) continue;
-                        this.usb.logs.push(`[RX ${new Date().toLocaleTimeString()}] ${line}`);
-                        if (this.usb.logs.length > 80) this.usb.logs.shift();
-                        this.parseUsbLine(line);
-                    }
-                }
-            } catch (err) {
-                if (!serialStopFlag) this.notify('Conexão USB encerrada.', 'error');
-            } finally {
-                this.usb.connected = false;
-            }
-        },
-
-        parseUsbLine(line) {
-            let flow = null, temp = null, uFlow = 0, uTemp = 0;
-
-            if (line.startsWith('{') && line.endsWith('}')) {
-                try {
-                    const obj = JSON.parse(line);
-                    const v = obj.variables || obj;
-                    if (v.flow !== undefined) flow = Number(v.flow);
-                    if (v.temp !== undefined) temp = Number(v.temp);
-                    if (v.u_flow !== undefined) uFlow = Number(v.u_flow);
-                    if (v.u_temp !== undefined) uTemp = Number(v.u_temp);
-                } catch (e) { return; }
-            } else {
-                const mFlow = line.match(/(?:flow|vazao|q)\s*[=:]\s*([-+]?\d+(?:\.\d+)?)/i);
-                const mTemp = line.match(/(?:temp|temperature|t1)\s*[=:]\s*([-+]?\d+(?:\.\d+)?)/i);
-                const mU1   = line.match(/(?:u_flow|u1|pm)\s*[=:]\s*([-+]?\d+(?:\.\d+)?)/i);
-                const mU2   = line.match(/(?:u_temp|u2|ph)\s*[=:]\s*([-+]?\d+(?:\.\d+)?)/i);
-                if (mFlow) flow = Number(mFlow[1]);
-                if (mTemp) temp = Number(mTemp[1]);
-                if (mU1)   uFlow = Number(mU1[1]);
-                if (mU2)   uTemp = Number(mU2[1]);
-            }
-
-            if (flow === null && temp === null) return;
-
-            const phys = this.computeClientPhysics(flow ?? 0, temp ?? 22);
-            const reading = {
-                id: Date.now(),
-                device_id: this.usb.deviceId,
-                flow, temp, u_flow: uFlow, u_temp: uTemp,
-                sp_flow: this.realState.setpoint_flow,
-                sp_temp: this.realState.setpoint_temp,
-                ...phys,
-                ts: new Date().toLocaleTimeString('pt-BR', { hour12: false }),
-                ts_full: new Date().toLocaleString('pt-BR')
-            };
-
-            this.realReadings.push(reading);
-            if (this.realReadings.length > 80) this.realReadings.shift();
-            this.latestReal = reading;
-            this.updateChartSet(realUnifiedChart, realFlowChart, realTempChart, this.realReadings, this.realState);
-
-            const nowMs = Date.now();
-            if (nowMs - this.usb.lastPersistMs >= 1000) {
-                this.usb.lastPersistMs = nowMs;
-                fetch('/panel/simulate', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json', 'Accept': 'application/json', 'X-CSRF-TOKEN': csrf },
-                    body: JSON.stringify({ source: 'usb', device_id: this.usb.deviceId, flow, temp, u_flow: uFlow, u_temp: uTemp })
-                }).catch(() => {});
-            }
-        },
-
-        async writeUsbCommand(text) {
-            if (!serialWriter) return;
-            await serialWriter.write(text + '\n');
-            this.usb.logs.push(`[TX ${new Date().toLocaleTimeString()}] ${text}`);
-            if (this.usb.logs.length > 80) this.usb.logs.shift();
-        },
-
-        async sendManualUsb() {
-            const cmd = this.usb.manualCmd.trim();
-            if (!cmd) return;
-            await this.writeUsbCommand(cmd);
-            this.usb.manualCmd = '';
-        },
-
-        // ---------- COMANDOS E HISTÓRICO DA PLANTA REAL ----------
+        // ---------- COMANDOS E LEITURA REAL ----------
         queueRealSlider(name, value) {
-            if (name === 'setpoint_flow') this.realState.setpoint_flow = Number(value);
             if (name === 'setpoint_temp') this.realState.setpoint_temp = Number(value);
-            if (name === 'kp_flow') this.realState.kp_flow = Number(value);
-            if (name === 'ki_flow') this.realState.ki_flow = Number(value);
             if (name === 'kp_temp') this.realState.kp_temp = Number(value);
             if (name === 'ki_temp') this.realState.ki_temp = Number(value);
 
@@ -1315,53 +807,54 @@ function ltr701App() {
         },
 
         async sendRealCommand(name, value, showToast = false) {
-            if (this.usb.connected && this.selectedBoardKey.startsWith('usb:')) {
-                await this.writeUsbCommand(`${name}=${value}`);
+            try {
+                const res = await fetch('/panel/send', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', 'Accept': 'application/json', 'X-CSRF-TOKEN': csrf },
+                    body: JSON.stringify({ name, value })
+                });
+                const data = await res.json();
+                if (!res.ok) {
+                    this.notify(data.message || 'Erro ao enviar comando.', 'error');
+                    return;
+                }
+                this.realState = data.state;
+                if (showToast) this.notify(`Comando "${name}" enviado ao MATLAB.`);
+                if (isAdmin && showToast) this.fetchLogs();
+            } catch (err) {
+                this.notify('Erro de comunicação com o Laravel: ' + err.message, 'error');
             }
-
-            const res = await fetch('/panel/send', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json', 'Accept': 'application/json', 'X-CSRF-TOKEN': csrf },
-                body: JSON.stringify({ name, value, device_id: this.activeDeviceParam() })
-            });
-            const data = await res.json();
-            if (!res.ok) {
-                this.notify(data.message || 'Erro ao enviar comando.', 'error');
-                return;
-            }
-            this.realState = data.state;
-            if (showToast) this.notify(`Comando real "${name}" enviado.`);
-            if (isAdmin && showToast) this.fetchLogs();
         },
 
         async fetchRealHistory(syncForms = false) {
             try {
-                const devParam = encodeURIComponent(this.activeDeviceParam());
-                const res = await fetch(`/panel/history?limit=80&real_only=1&device_id=${devParam}`, {
+                const devParam = encodeURIComponent(this.selectedDevice);
+                const res = await fetch(`/panel/history?limit=80&device_id=${devParam}`, {
                     headers: { 'Accept': 'application/json' }
                 });
                 if (!res.ok) return;
                 const data = await res.json();
-                this.wifiDevices  = data.devices || [];
+                this.devices      = data.devices || [];
                 this.realReadings = data.readings || [];
 
                 if (data.state) {
                     this.realState = data.state;
                     if (syncForms) {
                         this.realForm = {
-                            spFlow: data.state.setpoint_flow, kpFlow: data.state.kp_flow, kiFlow: data.state.ki_flow, calibFlow: data.state.calib_flow,
-                            spTemp: data.state.setpoint_temp, kpTemp: data.state.kp_temp, kiTemp: data.state.ki_temp, calibTemp: data.state.calib_temp
+                            spTemp: data.state.setpoint_temp,
+                            kpTemp: data.state.kp_temp,
+                            kiTemp: data.state.ki_temp
                         };
                     }
                 }
                 if (this.realReadings.length > 0) {
                     this.latestReal = this.realReadings[this.realReadings.length - 1];
                 }
-                this.updateChartSet(realUnifiedChart, realFlowChart, realTempChart, this.realReadings, this.realState);
-            } catch (e) { console.error(e); }
+                this.updateChartPair(realTempChart, realErrorChart, this.realReadings, this.realState.setpoint_temp);
+            } catch (_) {}
         },
 
-        // ---------- MOTOR FÍSICO ACOPLADO DA SOMBRA DIGITAL (100% LOCAL · 2 Hz) ----------
+        // ---------- SOMBRA DIGITAL (TEMPERATURA · KIT 001) ----------
         toggleSimEngine() {
             if (this.simRunning) {
                 clearInterval(this.simTimer);
@@ -1375,95 +868,56 @@ function ltr701App() {
         },
 
         resetSimEngine() {
-            this.simPhys = { flow: 0, temp: this.simModel.tAmb, iFlow: 0, iTemp: 0, uFlow: 0, uTemp: 0 };
+            this.simPhys = { temp: this.simModel.tAmb, iTemp: 0.0, uTemp: 0.0 };
             this.simReadings = [];
             this.stepSimEngine();
             this.syncDisplays();
         },
 
-        injectPerturbation(kind, delta) {
-            if (kind === 'flow') {
-                this.simPhys.flow = Math.max(0, this.simPhys.flow + delta);
-                this.notify(`Perturbação aplicada na Sombra Digital: ${delta} kg/h na vazão.`);
-            } else {
-                this.simPhys.temp = Math.max(15, this.simPhys.temp + delta);
-                this.notify(`Perturbação aplicada na Sombra Digital: ${delta} °C na temperatura.`);
-            }
-        },
-
-        applyFreqTuning() {
-            const { wcg, pm } = this.freqTune;
-            const b0 = 19.16, a2 = 1.0, a1 = 4.564, a0 = 1.902;
-            const reD = a0 - a2 * wcg * wcg;
-            const imD = a1 * wcg;
-            const magG = b0 / Math.hypot(reD, imD);
-            const phaseG = -Math.atan2(imD, reD);
-            const kp = 1 / magG;
-            const ki = -kp * wcg * Math.tan((pm * Math.PI / 180) - Math.PI - phaseG);
-            if (kp > 0 && ki > 0 && isFinite(kp) && isFinite(ki)) {
-                this.simState.kp_flow = Number(kp.toFixed(3));
-                this.simState.ki_flow = Number(ki.toFixed(3));
-                this.runStepTest();
-            }
+        injectTempPerturbation(delta) {
+            this.simPhys.temp = Math.max(15, this.simPhys.temp + delta);
+            this.notify(`Perturbação térmica (${delta} °C) aplicada na Sombra Digital.`);
         },
 
         stepSimEngine() {
-            const subSteps = 10;
-            const dt = 0.05;
-            const m = this.simModel;
+            const subSteps = 50;
+            const dt = 0.01; // 50 * 10 ms = 0.5 s
+            const m  = this.simModel;
             const st = this.simState;
-            let { flow: q, temp: t, iFlow, iTemp, uFlow, uTemp } = this.simPhys;
+            let { temp: t, iTemp, uTemp } = this.simPhys;
 
             for (let s = 0; s < subSteps; s++) {
-                if (st.enable_flow) {
-                    const errF = st.setpoint_flow - q;
-                    const iCand = iFlow + st.ki_flow * errF * dt;
-                    const uRaw  = st.kp_flow * errF + iCand;
-                    uFlow = Math.max(0, Math.min(9.5, uRaw));
-                    if (uRaw === uFlow || (uFlow >= 9.5 && errF < 0) || (uFlow <= 0 && errF > 0)) iFlow = iCand;
-                } else {
-                    iFlow = 0; uFlow = 0;
-                }
-
                 if (st.enable_temp) {
-                    const errT = st.setpoint_temp - t;
+                    const errT  = st.setpoint_temp - t;
                     const iCand = iTemp + st.ki_temp * errT * dt;
                     const uRaw  = st.kp_temp * errT + iCand;
                     uTemp = Math.max(0, Math.min(9.5, uRaw));
-                    if (uRaw === uTemp || (uTemp >= 9.5 && errT < 0) || (uTemp <= 0 && errT > 0)) iTemp = iCand;
+                    if (uRaw === uTemp || (uTemp >= 9.5 && errT < 0) || (uTemp <= 0 && errT > 0)) {
+                        iTemp = iCand;
+                    }
                 } else {
                     iTemp = 0; uTemp = 0;
                 }
 
-                const rhoRatio = (m.tAmb + 273.15) / (Math.max(10, t) + 273.15);
-                const qTarget  = m.kFlow * uFlow * Math.sqrt(rhoRatio);
-                q = Math.max(0, q + ((qTarget - q) / Math.max(0.1, m.tauFlow)) * dt);
-
-                const hEff = 0.30 + 0.70 * (q / 25.0);
-                const dTdt = (m.kTemp * uTemp - hEff * (t - m.tAmb)) / Math.max(0.2, m.cThBase);
+                // Modelo 1a ordem Kit 001: d(T - Tamb)/dt = b0*u - a0*(T - Tamb)
+                const dTdt = (m.b0 * uTemp) - (m.a0 * (t - m.tAmb));
                 t = Math.max(15, Math.min(115, t + dTdt * dt));
             }
 
-            this.simPhys = { flow: q, temp: t, iFlow, iTemp, uFlow, uTemp };
+            this.simPhys = { temp: t, iTemp, uTemp };
 
             const ns = Math.max(0, Number(m.noiseScale) || 0);
-            const flowSigma = (q > 0.2 ? (0.045 + 0.0075 * q) : 0.012) * ns;
-            const tempSigma = ((uTemp > 0.1 || t > m.tAmb + 1.5) ? (0.045 + 0.013 * uTemp + 0.0015 * q) : 0.032) * ns;
-
-            const measFlow = Math.max(0, Number((q + this.gauss(flowSigma)).toFixed(3)));
-            const measTemp = Number((t + this.gauss(tempSigma)).toFixed(3));
-            const phys     = this.computeClientPhysics(measFlow, measTemp);
+            const sigma = ((uTemp > 0.1 || t > m.tAmb + 1.5) ? (0.04 + 0.012 * uTemp) : 0.025) * ns;
+            const measTemp = Number((t + this.gauss(sigma)).toFixed(3));
+            const errNow   = Number((st.setpoint_temp - measTemp).toFixed(3));
 
             const reading = {
                 id: Date.now(),
                 device_id: 'SOMBRA-LOCAL',
-                flow: measFlow,
                 temp: measTemp,
-                u_flow: Number(uFlow.toFixed(3)),
                 u_temp: Number(uTemp.toFixed(3)),
-                sp_flow: st.setpoint_flow,
                 sp_temp: st.setpoint_temp,
-                ...phys,
+                error: errNow,
                 ts: new Date().toLocaleTimeString('pt-BR', { hour12: false }),
                 ts_full: new Date().toLocaleString('pt-BR')
             };
@@ -1471,26 +925,7 @@ function ltr701App() {
             this.simReadings.push(reading);
             if (this.simReadings.length > 80) this.simReadings.shift();
             this.latestSim = reading;
-            this.updateChartSet(simUnifiedChart, simFlowChart, simTempChart, this.simReadings, this.simState);
-        },
-
-        computeClientPhysics(flowKgh, tempC) {
-            const pAtm = 101325.0, rAir = 287.05, area = 0.0019635, kLoss = 3.2;
-            const tempK = Math.max(250, tempC + 273.15);
-            const density = pAtm / (rAir * tempK);
-            const velocity = ((Math.max(0, flowKgh) / 3600) / density) / area;
-            const pressure_pa = 0.5 * density * velocity * velocity * (1 + kLoss);
-            const pressure_atm = (pAtm + pressure_pa) / pAtm;
-            const hEff = 0.30 + 0.70 * (Math.max(0, flowKgh) / 25.0);
-
-            return {
-                density: Number(density.toFixed(3)),
-                velocity: Number(velocity.toFixed(3)),
-                pressure_pa: Number(pressure_pa.toFixed(3)),
-                pressure_atm: Number(pressure_atm.toFixed(4)),
-                tau_flow: Number(this.simModel.tauFlow.toFixed(3)),
-                tau_temp: Number((this.simModel.cThBase / hEff).toFixed(3))
-            };
+            this.updateChartPair(simTempChart, simErrorChart, this.simReadings, st.setpoint_temp);
         },
 
         gauss(sigma) {
@@ -1501,55 +936,42 @@ function ltr701App() {
             return Math.max(-2.5 * sigma, Math.min(2.5 * sigma, z * sigma));
         },
 
-        // ---------- ENSAIO PROGRAMADO EM DEGRAU (LCON-I · TUSTIN 100 Hz) ----------
-        loadStepPreset(loop) {
-            this.stepTest.loop = loop;
-            if (loop === 'flow') {
-                Object.assign(this.stepTest, { b0: 19.16, a2: 1.0, a1: 4.564, a0: 1.902, tFinal: 15, y0: 0, sp1: 50, sp2: 80, tSp2: 10, pert: 10, tPert: 5 });
-            } else {
-                Object.assign(this.stepTest, { b0: 0.8896, a2: 0.0, a1: 1.0, a0: 0.1939, tFinal: 30, y0: 25, sp1: 35, sp2: 30, tSp2: 20, pert: 2, tPert: 15 });
-            }
-            this.runStepTest();
-        },
-
         runStepTest() {
             if (!stepRespChart || !stepCtrlChart) return;
             const st = this.stepTest;
-            const Kp = st.loop === 'flow' ? this.simState.kp_flow : this.simState.kp_temp;
-            const Ki = st.loop === 'flow' ? this.simState.ki_flow : this.simState.ki_temp;
+            const Kp = this.simState.kp_temp;
+            const Ki = this.simState.ki_temp;
+            const b0 = this.simModel.b0;
+            const a0 = this.simModel.a0;
+            const tAmb = this.simModel.tAmb;
 
             const dt = 0.01, c = 2 / dt;
-            const N = Math.floor(Math.max(5, Math.min(120, st.tFinal)) / dt);
-            const is2nd = Math.abs(st.a2) > 1e-9;
+            const N  = Math.floor(Math.max(5, Math.min(120, st.tFinal)) / dt);
+            const d0 = c + a0, d1 = a0 - c;
 
-            const n0 = st.b0, n1 = is2nd ? 2 * st.b0 : st.b0, n2 = is2nd ? st.b0 : 0;
-            const d0 = is2nd ? (st.a2 * c * c + st.a1 * c + st.a0) : (st.a1 * c + st.a0);
-            const d1 = is2nd ? (2 * st.a0 - 2 * st.a2 * c * c) : (st.a0 - st.a1 * c);
-            const d2 = is2nd ? (st.a2 * c * c - st.a1 * c + st.a0) : 0;
-
-            let u = [0, 0, 0], y = [st.y0, st.y0, st.y0], I = 0;
+            let u0 = 0, u1 = 0, dy0 = st.y0 - tAmb, dy1 = st.y0 - tAmb, I = 0;
             const labels = [], yOut = [], spOut = [], eOut = [], uOut = [];
             const pertStep = Math.round(st.tPert / dt);
-            const sampleEvery = Math.max(5, Math.floor(N / 220));
+            const sampleEvery = Math.max(5, Math.floor(N / 200));
 
             for (let i = 0; i <= N; i++) {
-                const t = i * dt;
+                const t  = i * dt;
                 const sp = t >= st.tSp2 ? st.sp2 : st.sp1;
-                const e = sp - y[0];
-                I += Ki * e * dt;
-                const ctrl = Math.max(0, Math.min(10, Kp * e + I));
+                const yCurr = tAmb + dy0;
+                const e  = sp - yCurr;
+                const iCand = I + Ki * e * dt;
+                const uRaw  = Kp * e + iCand;
+                const ctrl  = Math.max(0, Math.min(9.5, uRaw));
+                if (uRaw === ctrl || (ctrl >= 9.5 && e < 0) || (ctrl <= 0 && e > 0)) I = iCand;
 
-                u[2] = u[1]; u[1] = u[0]; u[0] = ctrl;
-                y[2] = y[1]; y[1] = y[0];
-                y[0] = is2nd
-                    ? (n0 * u[0] + n1 * u[1] + n2 * u[2] - d1 * y[1] - d2 * y[2]) / d0
-                    : (n0 * u[0] + n1 * u[1] - d1 * y[1]) / d0;
-
-                if (i === pertStep && pertStep > 0) y[0] -= st.pert;
+                u1 = u0; u0 = ctrl;
+                dy1 = dy0;
+                dy0 = (b0 * (u0 + u1) - d1 * dy1) / d0;
+                if (i === pertStep && pertStep > 0) dy0 -= st.pert;
 
                 if (i % sampleEvery === 0) {
                     labels.push(t.toFixed(1) + 's');
-                    yOut.push(Number(y[0].toFixed(2)));
+                    yOut.push(Number((tAmb + dy0).toFixed(2)));
                     spOut.push(sp);
                     eOut.push(Number(e.toFixed(2)));
                     uOut.push(Number(ctrl.toFixed(2)));
@@ -1567,23 +989,20 @@ function ltr701App() {
             stepCtrlChart.update('none');
         },
 
-        // ---------- DADOS DO DIAGRAMA DE BLOCOS SVG INTERATIVO ----------
+        // ---------- DIAGRAMA DE BLOCOS SVG ----------
         diag() {
             const st  = this.activeTab === 'real' ? this.realState : this.simState;
             const dsp = this.activeTab === 'real' ? this.realDisplay : this.simDisplay;
-            if (this.diagramLoop === 'flow') {
-                const pv = dsp.flow ?? 0;
-                return {
-                    unit: 'kg/h', sp: st.setpoint_flow, pv, err: st.setpoint_flow - pv,
-                    kp: st.kp_flow, ki: st.ki_flow, enabled: st.enable_flow,
-                    u: dsp.uFlow ?? 0, tau: dsp.tauFlow ?? 0.964, calib: st.calib_flow
-                };
-            }
-            const pv = dsp.temp ?? 22;
+            const pv  = dsp.temp ?? 22;
             return {
-                unit: '°C', sp: st.setpoint_temp, pv, err: st.setpoint_temp - pv,
-                kp: st.kp_temp, ki: st.ki_temp, enabled: st.enable_temp,
-                u: dsp.uTemp ?? 0, tau: dsp.tauTemp ?? 5.157, calib: st.calib_temp
+                sp: st.setpoint_temp,
+                pv,
+                err: st.setpoint_temp - pv,
+                kp: st.kp_temp,
+                ki: st.ki_temp,
+                enabled: st.enable_temp,
+                u: dsp.uTemp ?? 0,
+                tau: this.activeTab === 'real' ? (dsp.tauTemp ?? 5.157) : (1 / Math.max(0.01, this.simModel.a0))
             };
         },
 
@@ -1592,81 +1011,77 @@ function ltr701App() {
             const map = {
                 sp: {
                     title: 'Referência / Setpoint (SP)',
-                    desc: `Alvo atual: ${this.fmt(d.sp, 3)} ${d.unit}. Se o valor medido não convergir para o SP, verifique a saturação em 0–9,5 V e a calibração do sensor.`,
+                    desc: `Alvo atual: ${this.fmt(d.sp, 1)} °C. Na aba Real, mover o slider envia o novo valor ao Laravel e o MATLAB sincroniza em até 0,5 s.`,
                     ref: 'LCON-I · Malha Fechada'
                 },
                 pi: {
-                    title: 'Controlador PI Digital (Euler / Tustin · 100 Hz)',
-                    desc: `Kp = ${this.fmt(d.kp, 3)}, Ki = ${this.fmt(d.ki, 3)}, erro atual = ${this.fmt(d.err, 3)} ${d.unit}. Se oscilar entre 0% e 100%, divida Kp e Ki por 2 ou 10; ao desligar, zere a parcela integral i(k).`,
-                    ref: 'Ativ. 08, 09 e 11'
+                    title: 'Controlador PI Digital (100 Hz no MATLAB)',
+                    desc: `Kp = ${this.fmt(d.kp, 3)}, Ki = ${this.fmt(d.ki, 3)}, erro = ${this.fmt(d.err, 2)} °C. Com anti-windup (0–9,5 V) e reset do integrador ao desligar.`,
+                    ref: 'Ativ. 08 e 09'
                 },
-                cond: {
-                    title: 'Interface de Sinais (NI-USB-6003 0–10 V / ESP32)',
-                    desc: 'Com a placa NI-USB-6003, a conexão ao Kit LTR701 é direta em 0–10 V (AI0=S2, AI1=S5, AO0=ACT2, AO1=ACT1). Com ESP32, exige divisor 10V→3V e LM741 3V→10V.',
-                    ref: 'Ativ. 07, 09 e 11'
+                daq: {
+                    title: 'Placa NI-USB-6003 (Dev3)',
+                    desc: 'Conexão direta 0–10 V com o Kit LTR701: AI0 lê o SENSOR 2 (SingleEnded) e AO0 comanda o ACTUATOR 2 (aquecedor).',
+                    ref: 'Hardware DAQ'
                 },
                 plant: {
-                    title: 'Planta Física · Kit ELWE LTR701 (Kit 001)',
-                    desc: this.diagramLoop === 'flow'
-                        ? 'Modelo 2ª ordem (fit 92,07%): G(s) = 19,16 / (s² + 4,564s + 1,902). Perturbação física via válvula manual na entrada.'
-                        : 'Modelo 1ª ordem (fit 87,48%): G(s) = 0,8896 / (s + 0,1939), τ = 5,157 s. A constante térmica cai quando a vazão aumenta.',
-                    ref: this.diagramLoop === 'flow' ? 'Ativ. 10 · Parte C' : 'Ativ. 07 · Parte C'
+                    title: 'Planta Térmica · Kit ELWE LTR701 (Kit 001)',
+                    desc: 'Modelo identificado (fit 87,48%): G_T(s) = 0,8896 / (s + 0,1939), τ ≈ 5,157 s. Vazão de ar fixada manualmente no soprador.',
+                    ref: 'Ativ. 07 · Parte C'
                 },
                 sensor: {
-                    title: 'Sensor, Equação de Calibração f(x) & Filtro Digital',
-                    desc: `Fórmula ativa: y = ${d.calib}. Aplica-se filtro passa-baixas digital (fc = 12,5 Hz) antes de calcular o erro. Divergência fixa em relação ao display do kit indica ajuste na fórmula f(x) ou aterramento AI GND.`,
-                    ref: this.diagramLoop === 'flow' ? 'Ativ. 10 · Parte A' : 'Ativ. 07 · Parte A'
+                    title: 'SENSOR 2 (Termopar K) + Filtro Passa-Baixas',
+                    desc: 'Tensão 0–10 V convertida por T(V) = 10,4·V + 0,0795 e filtrada digitalmente em fc = 12,5 Hz (Tustin) antes do cálculo do erro.',
+                    ref: 'Ativ. 07 · Parte A'
                 }
             };
             return map[this.selectedBlock] || map.pi;
         },
 
-        // ---------- GRÁFICOS CHART.JS ----------
+        // ---------- CHART.JS ----------
         initCharts() {
-            const dualOpts = (leftTitle) => ({
+            const dualOpts = {
                 responsive: true, maintainAspectRatio: false, animation: false,
                 interaction: { mode: 'index', intersect: false },
                 scales: {
                     x: { ticks: { color: '#94a3b8', maxTicksLimit: 10 }, grid: { color: 'rgba(148,163,184,0.08)' } },
-                    y: { position: 'left', title: { display: true, text: leftTitle, color: '#cbd5e1' }, ticks: { color: '#94a3b8' }, grid: { color: 'rgba(148,163,184,0.1)' } },
-                    y1: { position: 'right', min: 0, max: 10.5, title: { display: true, text: 'Controle [V]', color: '#94a3b8' }, ticks: { color: '#94a3b8' }, grid: { drawOnChartArea: false } }
+                    y: { position: 'left', title: { display: true, text: 'Temperatura (°C)', color: '#fb923c' }, ticks: { color: '#94a3b8' }, grid: { color: 'rgba(148,163,184,0.1)' } },
+                    y1: { position: 'right', min: 0, max: 10.5, title: { display: true, text: 'Controle u [V]', color: '#38bdf8' }, ticks: { color: '#94a3b8' }, grid: { drawOnChartArea: false } }
                 },
                 plugins: { legend: { labels: { color: '#e2e8f0', boxWidth: 14 } } }
-            });
+            };
 
-            const createTriplet = (uId, fId, tId) => ([
-                new Chart(document.getElementById(uId), {
-                    type: 'line',
-                    data: { labels: [], datasets: [
-                        { label: 'Vazão (kg/h)', data: [], yAxisID: 'y', borderColor: '#38bdf8', borderWidth: 2.2, tension: 0.2, pointRadius: 0 },
-                        { label: 'Temperatura (°C)', data: [], yAxisID: 'y', borderColor: '#fb923c', borderWidth: 2.2, tension: 0.2, pointRadius: 0 },
-                        { label: 'u₁ Ventilador (V)', data: [], yAxisID: 'y1', borderColor: '#818cf8', borderDash: [4,3], borderWidth: 1.5, pointRadius: 0 },
-                        { label: 'u₂ Aquecedor (V)', data: [], yAxisID: 'y1', borderColor: '#f43f5e', borderDash: [4,3], borderWidth: 1.5, pointRadius: 0 }
-                    ]},
-                    options: dualOpts('kg/h · °C')
-                }),
-                new Chart(document.getElementById(fId), {
-                    type: 'line',
-                    data: { labels: [], datasets: [
-                        { label: 'Vazão (kg/h)', data: [], yAxisID: 'y', borderColor: '#38bdf8', backgroundColor: 'rgba(56,189,248,0.12)', fill: true, tension: 0.2, pointRadius: 0 },
-                        { label: 'Setpoint', data: [], yAxisID: 'y', borderColor: '#facc15', borderDash: [6,4], fill: false, pointRadius: 0 },
-                        { label: 'Controle u₁ (V)', data: [], yAxisID: 'y1', borderColor: '#a78bfa', borderWidth: 1.5, fill: false, pointRadius: 0 }
-                    ]},
-                    options: dualOpts('kg/h')
-                }),
+            const errOpts = {
+                responsive: true, maintainAspectRatio: false, animation: false,
+                interaction: { mode: 'index', intersect: false },
+                scales: {
+                    x: { ticks: { color: '#94a3b8', maxTicksLimit: 8 }, grid: { color: 'rgba(148,163,184,0.08)' } },
+                    y: { title: { display: true, text: 'Erro (°C)', color: '#f87171' }, ticks: { color: '#94a3b8' }, grid: { color: 'rgba(148,163,184,0.1)' } }
+                },
+                plugins: { legend: { labels: { color: '#e2e8f0', boxWidth: 12 } } }
+            };
+
+            const makePair = (tId, eId) => ([
                 new Chart(document.getElementById(tId), {
                     type: 'line',
                     data: { labels: [], datasets: [
-                        { label: 'Temperatura (°C)', data: [], yAxisID: 'y', borderColor: '#fb923c', backgroundColor: 'rgba(251,146,60,0.12)', fill: true, tension: 0.2, pointRadius: 0 },
-                        { label: 'Setpoint', data: [], yAxisID: 'y', borderColor: '#facc15', borderDash: [6,4], fill: false, pointRadius: 0 },
-                        { label: 'Controle u₂ (V)', data: [], yAxisID: 'y1', borderColor: '#f43f5e', borderWidth: 1.5, fill: false, pointRadius: 0 }
+                        { label: 'Temperatura (°C)', data: [], yAxisID: 'y', borderColor: '#fb923c', backgroundColor: 'rgba(251,146,60,0.12)', fill: true, borderWidth: 2.2, tension: 0.2, pointRadius: 0 },
+                        { label: 'Setpoint (°C)', data: [], yAxisID: 'y', borderColor: '#facc15', borderDash: [6,4], borderWidth: 1.8, fill: false, pointRadius: 0 },
+                        { label: 'Controle u (V)', data: [], yAxisID: 'y1', borderColor: '#38bdf8', borderWidth: 1.6, fill: false, pointRadius: 0 }
                     ]},
-                    options: dualOpts('°C')
+                    options: dualOpts
+                }),
+                new Chart(document.getElementById(eId), {
+                    type: 'line',
+                    data: { labels: [], datasets: [
+                        { label: 'Erro e(t) [°C]', data: [], borderColor: '#f87171', backgroundColor: 'rgba(248,113,113,0.12)', fill: true, borderWidth: 1.8, tension: 0.2, pointRadius: 0 }
+                    ]},
+                    options: errOpts
                 })
             ]);
 
-            [realUnifiedChart, realFlowChart, realTempChart] = createTriplet('realUnifiedChart', 'realFlowChart', 'realTempChart');
-            [simUnifiedChart, simFlowChart, simTempChart]    = createTriplet('simUnifiedChart', 'simFlowChart', 'simTempChart');
+            [realTempChart, realErrorChart] = makePair('realTempChart', 'realErrorChart');
+            [simTempChart, simErrorChart]   = makePair('simTempChart', 'simErrorChart');
 
             const simpleOpts = (yTitle, maxY = null) => ({
                 responsive: true, maintainAspectRatio: false, animation: false,
@@ -1680,11 +1095,11 @@ function ltr701App() {
             stepRespChart = new Chart(document.getElementById('stepRespChart'), {
                 type: 'line',
                 data: { labels: [], datasets: [
-                    { label: 'PV', data: [], borderColor: '#22c55e', borderWidth: 2, pointRadius: 0 },
-                    { label: 'SP', data: [], borderColor: '#38bdf8', borderDash: [5,4], borderWidth: 1.6, pointRadius: 0 },
+                    { label: 'Temp (°C)', data: [], borderColor: '#22c55e', borderWidth: 2, pointRadius: 0 },
+                    { label: 'SP (°C)', data: [], borderColor: '#38bdf8', borderDash: [5,4], borderWidth: 1.6, pointRadius: 0 },
                     { label: 'Erro', data: [], borderColor: '#f87171', borderWidth: 1.1, pointRadius: 0 }
                 ]},
-                options: simpleOpts('Resposta')
+                options: simpleOpts('°C')
             });
 
             stepCtrlChart = new Chart(document.getElementById('stepCtrlChart'), {
@@ -1696,31 +1111,17 @@ function ltr701App() {
             });
         },
 
-        updateChartSet(uChart, fChart, tChart, list, st) {
+        updateChartPair(tChart, eChart, list, fallbackSp) {
             const labels = list.map(r => r.ts);
-            const flow   = list.map(r => r.flow);
-            const temp   = list.map(r => r.temp);
-            const uFlow  = list.map(r => r.u_flow);
-            const uTemp  = list.map(r => r.u_temp);
-
-            uChart.data.labels = labels;
-            uChart.data.datasets[0].data = flow;
-            uChart.data.datasets[1].data = temp;
-            uChart.data.datasets[2].data = uFlow;
-            uChart.data.datasets[3].data = uTemp;
-            uChart.update('none');
-
-            fChart.data.labels = labels;
-            fChart.data.datasets[0].data = flow;
-            fChart.data.datasets[1].data = list.map(r => r.sp_flow ?? st.setpoint_flow);
-            fChart.data.datasets[2].data = uFlow;
-            fChart.update('none');
-
             tChart.data.labels = labels;
-            tChart.data.datasets[0].data = temp;
-            tChart.data.datasets[1].data = list.map(r => r.sp_temp ?? st.setpoint_temp);
-            tChart.data.datasets[2].data = uTemp;
+            tChart.data.datasets[0].data = list.map(r => r.temp);
+            tChart.data.datasets[1].data = list.map(r => r.sp_temp ?? fallbackSp);
+            tChart.data.datasets[2].data = list.map(r => r.u_temp);
             tChart.update('none');
+
+            eChart.data.labels = labels;
+            eChart.data.datasets[0].data = list.map(r => r.error ?? ((r.sp_temp ?? fallbackSp) - r.temp));
+            eChart.update('none');
         },
 
         async fetchLogs() {
@@ -1731,11 +1132,10 @@ function ltr701App() {
         },
 
         exportCsv(list, filename) {
-            const header = 'id,horario,dispositivo,vazao_kgh,temp_c,velocidade_ms,pressao_pa,pressao_atm,u_vazao_v,u_temp_v\n';
+            const header = 'id,horario,dispositivo,temp_c,sp_temp_c,erro_c,u_temp_v,rtt_ms\n';
             const rows = list.map(r => [
                 r.id, `"${r.ts_full || r.ts}"`, r.device_id,
-                r.flow ?? '', r.temp ?? '', r.velocity ?? '', r.pressure_pa ?? '', r.pressure_atm ?? '',
-                r.u_flow ?? '', r.u_temp ?? ''
+                r.temp ?? '', r.sp_temp ?? '', r.error ?? '', r.u_temp ?? '', r.rtt_ms ?? ''
             ].join(',')).join('\n');
             const blob = new Blob([header + rows], { type: 'text/csv;charset=utf-8;' });
             const a = document.createElement('a');
