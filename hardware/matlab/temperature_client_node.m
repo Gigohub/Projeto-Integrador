@@ -1,182 +1,187 @@
-%% =========================================================================
-%% PROJETO INTEGRADOR LCON-I / SCOM - TEMPERATURA (PI) + SOPRADOR CONSTANTE
-%% Hardware: NI-USB-6003 (Dev3) + Kit ELWE LTR701
-%%   - AI0 -> SENSOR 2 (Temperatura)
-%%   - AO0 -> ACTUATOR 2 (Aquecedor - controlado pelo PI)
-%%   - AO1 -> ACTUATOR 1 (Soprador - tensao constante enquanto o script roda)
-%% =========================================================================
 function temperature_client_node()
+% =========================================================================
+% PROJETO INTEGRADOR LCON-I / SCOM - TEMPERATURA (PI) + SOPRADOR POR FLAGS
+% Hardware: NI-USB-6003 (Dev1) + Kit ELWE LTR701
+%   - AI0 -> SENSOR 2 (Temperatura, 0..10 V)
+%   - AO0 -> ACTUATOR 2 (Aquecedor, controlado pelo PI: 0..9.5 V)
+%   - AO1 -> ACTUATOR 1 (Soprador, sinal constante no ON e 0 V no OFF)
+% Rede: TCP 127.0.0.1:2000 (web/tcp_bridge.php)
+% =========================================================================
 
-clear;
 clc;
 
-%% --- 1. REDE E SERVIDOR LARAVEL ---
-server_url = "http://127.0.0.1:8000/api";
-device_id  = "MATLAB-NI6003";
-api_token  = "token_do_dispositivo"; % Igual ao DEVICE_API_TOKEN no web/.env
+%% --- 1. CONEXÃO TCP COM A PONTE DO SITE (127.0.0.1:2000) ---
+node_ip   = "127.0.0.1";
+node_port = 2000;
 
-headers = [
-    "Accept",        "application/json";
-    "Authorization", "Bearer " + api_token;
-    "X-Device-Id",   device_id;
-    "Connection",    "close"
-];
+fprintf("[INIT] Conectando a ponte TCP do site em %s:%d...\n", node_ip, node_port);
+client = tcpclient(node_ip, node_port);
+cleanupTcp = onCleanup(@() limparConexao(client));
+fprintf("[INIT] Conexao TCP estabelecida!\n");
 
-http_options = weboptions( ...
-    "HeaderFields", headers, ...
-    "Timeout", 3.0, ...
-    "MediaType", "application/json" ...
-);
+%% --- 2. CONFIGURAÇÃO DA PLACA NI-USB-6003 ---
+dev_name  = "Dev1"; % Confirmado no seu PC
+uFanConst = 1.5;    % Tensao constante do soprador (AO1) quando ligado
 
-%% --- 2. TENSAO CONSTANTE DO SOPRADOR (ACTUATOR 1 / AO1) ---
-% 2.5 V = ~25% (referencia usada na identificacao do Kit 001)
-% Ajuste se quiser mais vazao fixa (ex.: 3.0 V, 4.0 V ou 5.0 V)
-V_FAN_CONST = 2.5;
-
-%% --- 3. PLACA NI-USB-6003 ---
-dev_name = "Dev1"; % Ajuste se daqlist("ni") mostrar outro ID
 fprintf("[INIT] Inicializando NI-USB-6003 (%s)...\n", dev_name);
-
 d = daq("ni");
 
-% Entrada: AI0 = SENSOR 2 (Temperatura)
-ch_temp = addinput(d, dev_name, "ai0", "Voltage");
-ch_temp.TerminalConfig = "SingleEnded";
+% Entrada: AI0 -> SENSOR 2 (Temperatura)
+chTemp = addinput(d, dev_name, "ai0", "Voltage");
+chTemp.TerminalConfig = "SingleEnded";
 
 % Saidas: Coluna 1 = AO0 (Aquecedor) | Coluna 2 = AO1 (Soprador)
 addoutput(d, dev_name, "ao0", "Voltage");
 addoutput(d, dev_name, "ao1", "Voltage");
 
-% Liga o soprador na tensao constante e garante aquecedor zerado no inicio
-u_fan = max(0.0, min(9.5, V_FAN_CONST));
-write(d, [0.0, u_fan]);
+% Inicia com aquecedor e soprador zerados
+write(d, [0.0, 0.0]);
+cleanupDaq = onCleanup(@() limparDaq(d)); %#ok<NASGU>
+fprintf("[INIT] NI-USB-6003 pronta (AI0=Temp | AO0=Aquecedor | AO1=Soprador).\n");
 
-cleanupObj = onCleanup(@() encerrarDaq(d));
-fprintf("[INIT] NI-USB-6003 pronta! Soprador fixo em %.2f V (AO1) | Aquecedor em AO0.\n", u_fan);
+%% --- 3. FLAGS DE ESTADO, CALIBRAÇÃO E FILTRO PASSA-BAIXAS (20 Hz) ---
+dt = 0.05; % 20 Hz (50 ms)
 
-%% --- 4. CONSTANTES DE CONTROLE (100 Hz) E FILTRO (12.5 Hz) ---
-Ts      = 0.01;                      % 100 Hz (10 ms)
-tau_lpf = 1.0 / (2.0 * pi * 12.5);   % Corte em 12,5 Hz (Tustin / bilinear)
-a0_lpf  = 1.0 + (2.0 * tau_lpf / Ts);
-a1_lpf  = 1.0 - (2.0 * tau_lpf / Ts);
-
-xf_temp0 = 22.0; xf_temp1 = 22.0;
-yf_temp0 = 22.0; yf_temp1 = 22.0;
+% Flags que definem o estado sem precisar encerrar o MATLAB
+flag_controlador     = false; % true (1) = ligado | false (0) = desligado
+flag_controlador_ant = false; % detecta transicao (ON <-> OFF)
 
 % Calibracao SENSOR 2 (Kit 001): T(C) = 10.4 * V + 0.0795
-calib_temp_a = 10.4;
-calib_temp_b = 0.0795;
+calibA = 10.4;
+calibB = 0.0795;
 
-% Parametros iniciais do controlador PI de temperatura
-enable_temp   = false;
-setpoint_temp = 40.0;   % C
-kp_temp       = 0.800;
-ki_temp       = 0.300;
-integral_temp = 0.0;
-u_temp        = 0.0;
+% Filtro passa-baixas digital (fc = 4 Hz) inicializado na temperatura atual
+tauLpf = 1.0 / (2.0 * pi * 4.0);
+a0Lpf  = 1.0 + (2.0 * tauLpf / dt);
+a1Lpf  = 1.0 - (2.0 * tauLpf / dt);
 
-tx_packets   = 0;
-lost_packets = 0;
-last_rtt_ms  = 0.0;
-loop_count   = 0;
+scanInit = read(d, "OutputFormat", "Matrix");
+tempInit = (calibA * max(0.0, min(10.0, scanInit(1)))) + calibB;
+xf0 = tempInit;
+yf0 = tempInit;
 
-fprintf("[RUN] Controle PI 100 Hz ativo | Sync com site a 2 Hz. Ctrl+C para parar.\n\n");
+% Parametros de controle sincronizados pelo site
+setpoint     = 40.0;
+kp           = 0.800;
+ki           = 0.300;
+integralTemp = 0.0;
 
-%% --- 5. LOOP PRINCIPAL (100 Hz) ---
+fprintf("[RUN] Loop 20 Hz ativo (T0=%.2f C). Use LIGAR/DESLIGAR no site (Ctrl+C encerra).\n\n", tempInit);
+
+%% --- 4. LOOP PRINCIPAL CONTÍNUO (20 Hz) ---
 while true
-    t_start    = tic;
-    loop_count = loop_count + 1;
+    tLoop = tic;
 
-    % 5.1. Leitura fisica (AI0)
-    scan   = read(d, "OutputFormat", "Matrix");
-    temp_v = max(0.0, min(10.0, scan(1)));
+    % 4.1. Leitura nao-bloqueante das flags e parametros vindos do site
+    if client.NumBytesAvailable > 0
+        response = read(client, client.NumBytesAvailable, "string");
 
-    % 5.2. Calibracao + Filtro Passa-Baixas 12.5 Hz
-    temp_raw = (calib_temp_a * temp_v) + calib_temp_b;
-
-    xf_temp1  = xf_temp0;
-    xf_temp0  = temp_raw;
-    yf_temp1  = yf_temp0;
-    yf_temp0  = (xf_temp0 + xf_temp1 - (a1_lpf * yf_temp1)) / a0_lpf;
-    temp_filt = yf_temp0;
-
-    % 5.3. Controlador PI Digital - TEMPERATURA (AO0)
-    if enable_temp
-        err_temp    = setpoint_temp - temp_filt;
-        i_cand_temp = integral_temp + (err_temp * ki_temp * Ts);
-        u_raw_temp  = (kp_temp * err_temp) + i_cand_temp;
-        u_temp      = max(0.0, min(9.5, u_raw_temp));
-
-        % Anti-windup condicional
-        if (u_raw_temp == u_temp) || (u_temp >= 9.5 && err_temp < 0) || (u_temp <= 0.0 && err_temp > 0)
-            integral_temp = i_cand_temp;
-        end
-    else
-        integral_temp = 0.0; % Zera integrador ao desabilitar aquecedor
-        u_temp        = 0.0;
-    end
-
-    % 5.4. Escrita simultanea: [AO0 = Aquecedor (variavel), AO1 = Soprador (constante)]
-    write(d, [u_temp, u_fan]);
-
-    % 5.5. Sincronizacao HTTP REST a 2 Hz (a cada 50 iteracoes)
-    if mod(loop_count, 50) == 0
-        tx_packets = tx_packets + 1;
-        try
-            payload = struct();
-            payload.device_id        = device_id;
-            payload.variables.temp   = round(temp_filt, 3);
-            payload.variables.temp_v = round(temp_v, 3);
-            payload.variables.u_temp = round(u_temp, 3);
-            payload.variables.rtt_ms = round(last_rtt_ms, 2);
-
-            t_http = tic;
-            resp = webwrite(server_url + "/sync", payload, http_options);
-            last_rtt_ms = toc(t_http) * 1000.0;
-
-            % Aplica comandos vindos do site
-            if isstruct(resp) && isfield(resp, 'state')
-                s = resp.state;
-                enable_temp   = logical(s.enable_temp);
-                setpoint_temp = max(15.0, min(100.0, double(s.setpoint_temp)));
-                kp_temp       = max(0.0,  min(10.0,  double(s.kp_temp)));
-                ki_temp       = max(0.0,  min(10.0,  double(s.ki_temp)));
+        flagTokens = regexp(response, 'flag_controlador=([01])', 'tokens');
+        if ~isempty(flagTokens)
+            flag_controlador = (str2double(flagTokens{end}{1}) == 1);
+        else
+            statusTokens = regexp(response, 'status=(ON|OFF)', 'tokens');
+            if ~isempty(statusTokens)
+                flag_controlador = strcmp(statusTokens{end}{1}, "ON");
             end
-        catch err_net
-            lost_packets = lost_packets + 1;
-            fprintf("[NET WARN] %s\n", err_net.message);
         end
 
-        loss_pct = (lost_packets / tx_packets) * 100.0;
-        fprintf("TEMP[%s] %.2f/%.1f C | Aq(AO0)=%.2fV | Fan(AO1)=%.2fV | Kp=%.2f Ki=%.2f | RTT=%.1fms (Loss=%.0f%%)\n", ...
-            ternary(enable_temp, "ON ", "OFF"), temp_filt, setpoint_temp, u_temp, u_fan, ...
-            kp_temp, ki_temp, last_rtt_ms, loss_pct);
+        spTokens = regexp(response, 'setpoint=([\d.]+)', 'tokens');
+        if ~isempty(spTokens)
+            setpoint = max(15.0, min(100.0, str2double(spTokens{end}{1})));
+        end
+
+        kpTokens = regexp(response, 'kp=([\d.]+)', 'tokens');
+        if ~isempty(kpTokens)
+            kp = max(0.0, min(10.0, str2double(kpTokens{end}{1})));
+        end
+
+        kiTokens = regexp(response, 'ki=([\d.]+)', 'tokens');
+        if ~isempty(kiTokens)
+            ki = max(0.0, min(10.0, str2double(kiTokens{end}{1})));
+        end
     end
 
-    % 5.6. Mantem periodo de 100 Hz (10 ms)
-    elapsed = toc(t_start);
-    if elapsed < Ts
-        pause(Ts - elapsed);
+    % 4.2. Detecta transicao de estado (borda ON <-> OFF)
+    if flag_controlador ~= flag_controlador_ant
+        if flag_controlador
+            fprintf("\n[FLAG] Controlador LIGADO -> Soprador (AO1=%.2fV) + PI Aquecedor (AO0) ativos.\n", uFanConst);
+        else
+            fprintf("\n[FLAG] Controlador DESLIGADO -> Aquecedor (AO0=0V) e Soprador (AO1=0V) zerados.\n");
+            integralTemp = 0.0;
+            write(d, [0.0, 0.0]);
+        end
+        flag_controlador_ant = flag_controlador;
     end
-end
 
-end
+    % 4.3. Leitura continua do SENSOR 2 (AI0) + filtro passa-baixas
+    scan    = read(d, "OutputFormat", "Matrix");
+    tempV   = max(0.0, min(10.0, scan(1)));
+    tempRaw = (calibA * tempV) + calibB;
 
-function encerrarDaq(daqObj)
-    fprintf("\n[CLEANUP] Zerando aquecedor (AO0) e soprador (AO1)...\n");
-    try
-        write(daqObj, [0.0, 0.0]);
-        delete(daqObj);
-        fprintf("[CLEANUP] Finalizado com seguranca!\n");
-    catch
-        fprintf("[CLEANUP] DAQ ja liberada.\n");
-    end
-end
+    xf1 = xf0;
+    xf0 = tempRaw;
+    yf1 = yf0;
+    yf0 = (xf0 + xf1 - (a1Lpf * yf1)) / a0Lpf;
+    tempFilt = yf0;
 
-function out = ternary(cond, valTrue, valFalse)
-    if cond
-        out = valTrue;
+    % 4.4. Logica de atuacao controlada pelas flags
+    flag_soprador = flag_controlador;
+
+    if flag_controlador
+        uFan = max(0.0, min(9.5, uFanConst));
+
+        errTemp = setpoint - tempFilt;
+        iCand   = integralTemp + (errTemp * ki * dt);
+        uRaw    = (kp * errTemp) + iCand;
+        uTemp   = max(0.0, min(9.5, uRaw));
+
+        if (uRaw == uTemp) || (uTemp >= 9.5 && errTemp < 0) || (uTemp <= 0.0 && errTemp > 0)
+            integralTemp = iCand;
+        end
     else
-        out = valFalse;
+        integralTemp = 0.0;
+        uTemp        = 0.0;
+        uFan         = 0.0;
     end
+
+    % 4.5. Aplica tensoes na NI-USB-6003: [AO0 = Aquecedor, AO1 = Soprador]
+    write(d, [uTemp, uFan]);
+
+    % 4.6. Envia telemetria e flags para a ponte TCP
+    payload = sprintf("temperature=%.3f&temp_v=%.3f&u_temp=%.3f&u_fan=%.3f&flag_ctrl=%d&flag_fan=%d\n", ...
+        tempFilt, tempV, uTemp, uFan, flag_controlador, flag_soprador);
+    write(client, uint8(char(payload)));
+
+    fprintf("FLAG_CTRL=%d | FLAG_FAN=%d | SP=%.1f C | Temp=%.2f C (%.2fV) | Aq(AO0)=%.2fV | Fan(AO1)=%.2fV\n", ...
+        flag_controlador, flag_soprador, setpoint, tempFilt, tempV, uTemp, uFan);
+
+    % 4.7. Mantem os 20 Hz cravados
+    tempoGasto = toc(tLoop);
+    if tempoGasto < dt
+        pause(dt - tempoGasto);
+    end
+end
+end
+
+%% --- 5. FUNÇÕES DE LIMPEZA SEGURA (APENAS NO CTRL+C) ---
+function limparDaq(daqObj)
+fprintf('\n[CLEANUP] Zerando aquecedor (AO0) e soprador (AO1)...\n');
+try
+    write(daqObj, [0.0, 0.0]);
+    delete(daqObj);
+    fprintf('[CLEANUP] NI-USB-6003 zerada e liberada!\n');
+catch
+    fprintf('[CLEANUP] DAQ ja estava finalizada.\n');
+end
+end
+
+function limparConexao(tcpObj)
+fprintf('[CLEANUP] Fechando conexao TCP...\n');
+try
+    delete(tcpObj);
+    fprintf('[CLEANUP] Socket TCP liberado com sucesso!\n');
+catch
+    fprintf('[CLEANUP] Conexao TCP ja estava fechada.\n');
+end
 end
