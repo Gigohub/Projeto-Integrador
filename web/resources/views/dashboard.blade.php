@@ -55,9 +55,9 @@
 <body x-data="ltr701TempApp()" x-init="init()">
 
 @php
-    $userName = auth()->user()?->name ?? 'Operador Local (Tempo Real)';
-    $userRole = auth()->user()?->role ?? 'admin';
-    $isAdmin  = !auth()->check() || $userRole === 'admin';
+    $userName = auth()->user()?->name ?? 'Visitante';
+    $userRole = auth()->user()?->role ?? 'user';
+    $isAdmin  = auth()->check() && $userRole === 'admin';
 @endphp
 
 {{-- Navbar Superior --}}
@@ -74,7 +74,7 @@
                         :class="activeTab === 'real' && 'active bg-success text-white'"
                         @click="switchTab('real')">
                     <span class="status-dot" :class="isBoardOnline() ? 'bg-light' : 'bg-warning'"></span>
-                    Planta Real (NI-USB-6003)
+                    Planta Real / TCP MATLAB
                 </button>
             </li>
             <li class="nav-item">
@@ -83,7 +83,7 @@
                         :style="activeTab === 'sim' ? 'background-color:#7c3aed;color:#fff;' : ''"
                         @click="switchTab('sim')">
                     <span class="status-dot" :class="simRunning ? 'bg-info' : 'bg-secondary'"></span>
-                    Sombra Digital (Simulação)
+                    Sombra Digital (Local)
                 </button>
             </li>
         </ul>
@@ -91,7 +91,9 @@
         <div class="d-flex align-items-center gap-3">
             <div class="text-end d-none d-md-block">
                 <div class="small fw-semibold lh-1">{{ $userName }}</div>
-                <span class="badge text-bg-secondary" style="font-size: 0.65rem;">VAZÃO FIXA NA MÁQUINA</span>
+                <span class="badge {{ $isAdmin ? 'text-bg-danger' : 'text-bg-info' }}" style="font-size: 0.65rem;">
+                    {{ $isAdmin ? 'ADMINISTRADOR' : 'OPERADOR (CLIENTE)' }}
+                </span>
             </div>
             @auth
                 <form method="POST" action="{{ route('logout') }}" class="m-0">
@@ -114,7 +116,7 @@
     </template>
 
     {{-- ===================================================================== --}}
-    {{-- ABA 1: PLANTA REAL (MATLAB + NI-USB-6003 · SOMENTE TEMPERATURA)       --}}
+    {{-- ABA 1: PLANTA REAL / CONEXÃO TCP MATLAB (COM BANCO CRIPTOGRAFADO)     --}}
     {{-- ===================================================================== --}}
     <div x-show="activeTab === 'real'">
 
@@ -122,11 +124,11 @@
             <div class="d-flex flex-wrap justify-content-between align-items-center gap-3">
                 <div>
                     <div class="d-flex align-items-center gap-2">
-                        <span class="badge text-bg-success fw-bold">MODO HARDWARE REAL</span>
+                        <span class="badge text-bg-success fw-bold">MALHA TCP + BANCO AES-256</span>
                         <span class="small text-light fw-semibold" x-text="boardStatusText()"></span>
                     </div>
                     <div class="small text-secondary mt-1">
-                        Controle PI de temperatura rodando a 100 Hz no MATLAB (NI-USB-6003 · AI0/AO0). Vazão mantida fixa no potenciômetro do kit.
+                        Controle PI a 20 Hz no MATLAB (NI-USB-6003 Dev1 ou Simulador Externo) · Ponte TCP porta 2000 · Persistência criptografada no MySQL.
                     </div>
                 </div>
 
@@ -136,7 +138,7 @@
                         <select class="form-select bg-dark border-success text-light"
                                 x-model="selectedDevice"
                                 @change="fetchRealHistory(false)">
-                            <option value="ALL">MATLAB-NI6003 (Automático)</option>
+                            <option value="ALL">Todos os Controladores (Automático)</option>
                             <template x-for="dev in devices" :key="dev.device_id">
                                 <option :value="dev.device_id"
                                         x-text="(dev.online ? '● ' : '○ ') + dev.device_id + ' · ' + dev.ip + (dev.online ? ' (ONLINE)' : ' (offline há ' + dev.age_sec + 's)')">
@@ -148,9 +150,9 @@
                     <button type="button" class="btn btn-outline-light btn-sm" @click="fetchRealHistory(false)">
                         Atualizar
                     </button>
-                    <button type="button" class="btn btn-outline-secondary btn-sm"
-                            @click="exportCsv(realReadings, 'temperatura_real_ltr701.csv')"
-                            :disabled="realReadings.length === 0">CSV Real</button>
+                    <button type="button" class="btn btn-outline-success btn-sm fw-semibold"
+                            @click="downloadRealCsv()"
+                            :disabled="realReadings.length === 0">CSV Completo (BD)</button>
                 </div>
             </div>
         </div>
@@ -183,7 +185,7 @@
                         </div>
                         <div class="small text-secondary">
                             Status: <strong :class="realState.enable_temp ? 'text-success' : 'text-danger'"
-                                            x-text="realState.enable_temp ? 'MALHA FECHADA ATIVA' : 'AQUECEDOR DESLIGADO'"></strong>
+                                            x-text="realState.enable_temp ? 'MALHA FECHADA ATIVA' : 'CONTROLADOR DESLIGADO'"></strong>
                         </div>
                     </div>
                 </div>
@@ -192,13 +194,14 @@
             <div class="col-6 col-lg-3">
                 <div class="card panel-card rounded-3 h-100">
                     <div class="card-body py-2 px-3">
-                        <div class="text-secondary small">Esforço Aquecedor (AO0 · ACT 2)</div>
+                        <div class="text-secondary small">Aquecedor (AO0) &amp; Soprador (AO1)</div>
                         <div class="kpi-value text-info">
                             <span class="num-fixed" x-text="fmt(realDisplay.uTemp, 3)"></span>
                             <span class="fs-6 text-secondary">V</span>
                         </div>
                         <div class="small text-secondary">
-                            Potência: <span class="num-fixed-sm text-warning" x-text="fmt(((realDisplay.uTemp ?? 0) / 10) * 100, 1)"></span> % (Saturação 9,5 V)
+                            Soprador (AO1): <span class="num-fixed-sm text-warning fw-semibold" x-text="fmt(realDisplay.uFan, 2)"></span> V
+                            · <span x-text="fmt(((realDisplay.uTemp ?? 0) / 10) * 100, 1)"></span>% Aq.
                         </div>
                     </div>
                 </div>
@@ -207,12 +210,12 @@
             <div class="col-6 col-lg-3">
                 <div class="card panel-card rounded-3 h-100">
                     <div class="card-body py-2 px-3">
-                        <div class="text-secondary small">Dinâmica Kit 001 &amp; Rede</div>
+                        <div class="text-secondary small">Dinâmica Kit 001 &amp; Rede TCP</div>
                         <div class="small mt-1">
                             τ Térmica: <span class="num-fixed-sm text-warning fw-bold" x-text="fmt(realDisplay.tauTemp, 3)"></span> s
                         </div>
                         <div class="small mt-1">
-                            RTT Sync: <span class="num-fixed-sm text-info fw-bold" x-text="fmt(realDisplay.rttMs, 1)"></span> ms
+                            Ciclo TCP: <span class="num-fixed-sm text-info fw-bold" x-text="fmt(realDisplay.rttMs, 1)"></span> ms
                         </div>
                         <div class="text-secondary" style="font-size: 0.72rem;">
                             Pend.: <strong x-text="realState.pending_commands"></strong> · <code x-text="realDisplay.device || '---'"></code>
@@ -225,11 +228,11 @@
         {{-- Painel de Controle PI de Temperatura (Real) --}}
         <div class="card panel-card rounded-3 mb-3 border-success-subtle">
             <div class="card-header bg-transparent border-secondary-subtle d-flex justify-content-between align-items-center py-2">
-                <span class="fw-semibold text-warning small">Controlador PI Digital · Malha de Temperatura (ACTUATOR 2 / AO0 · SENSOR 2 / AI0)</span>
+                <span class="fw-semibold text-warning small">Controlador PI Digital · Malha de Temperatura (AO0 Aquecedor · AO1 Soprador · AI0 Sensor 2)</span>
                 <div class="btn-group btn-group-sm">
                     <button type="button" class="btn fw-semibold"
                             :class="realState.enable_temp ? 'btn-success' : 'btn-outline-success'"
-                            @click="sendRealCommand('enable_temp', 1, true)">LIGAR AQUECEDOR</button>
+                            @click="sendRealCommand('enable_temp', 1, true)">LIGAR CONTROLADOR</button>
                     <button type="button" class="btn fw-semibold"
                             :class="!realState.enable_temp ? 'btn-danger' : 'btn-outline-danger'"
                             @click="sendRealCommand('enable_temp', 0, true)">DESLIGAR</button>
@@ -276,7 +279,7 @@
                 <div class="card panel-card rounded-3 h-100">
                     <div class="card-header bg-transparent border-secondary-subtle d-flex justify-content-between align-items-center py-2">
                         <span class="fw-semibold small text-warning">Malha Real · Temperatura (°C), Setpoint e Sinal de Controle u(t) [V]</span>
-                        <span class="small text-secondary" x-show="realReadings.length === 0">Aguardando MATLAB (POST /api/sync)</span>
+                        <span class="small text-secondary" x-show="realReadings.length === 0">Aguardando MATLAB (TCP :2000)</span>
                     </div>
                     <div class="card-body py-2"><div class="chart-box-lg"><canvas id="realTempChart"></canvas></div></div>
                 </div>
@@ -294,7 +297,7 @@
     </div>
 
     {{-- ===================================================================== --}}
-    {{-- ABA 2: SOMBRA DIGITAL (SIMULAÇÃO ISOLADA DE TEMPERATURA · KIT 001)    --}}
+    {{-- ABA 2: SOMBRA DIGITAL (SIMULAÇÃO ISOLADA NO NAVEGADOR · KIT 001)      --}}
     {{-- ===================================================================== --}}
     <div x-show="activeTab === 'sim'" x-cloak>
 
@@ -307,7 +310,7 @@
                               x-text="simRunning ? 'Simulação Térmica Rodando (Kit 001 · G_T(s) = 0.8896 / (s + 0.1939))' : 'Simulação Pausada'"></span>
                     </div>
                     <div class="small text-secondary mt-1">
-                        Simulação 100% local no navegador. Nenhum comando desta aba interfere no MATLAB ou na NI-USB-6003.
+                        Simulação 100% local no navegador. Nenhum comando desta aba interfere no MATLAB, no banco de dados ou na NI-USB-6003.
                     </div>
                 </div>
 
@@ -524,7 +527,7 @@
                 <span class="badge" :class="activeTab === 'real' ? 'text-bg-success' : 'text-bg-primary'"
                       x-text="activeTab === 'real' ? 'Valores: Planta Real' : 'Valores: Sombra Digital'"></span>
             </div>
-            <span class="small text-secondary">Vazão de ar mantida fixa manualmente no Kit LTR701</span>
+            <span class="small text-secondary">Soprador em 1,5 V (normal) · 3,0 V (resfriamento > 5 s) · 0 V (OFF)</span>
         </div>
         <div class="card-body py-3">
             <div class="w-100 overflow-auto">
@@ -540,7 +543,7 @@
 
                     <rect x="12" y="12" width="435" height="232" rx="10" fill="rgba(56,189,248,0.04)" stroke="#38bdf8" stroke-dasharray="6,4" stroke-opacity="0.45"/>
                     <text x="24" y="30" fill="#7dd3fc" font-size="11" font-weight="600"
-                          x-text="activeTab === 'real' ? 'DOMÍNIO DIGITAL · MATLAB (100 Hz) + SITE LARAVEL' : 'DOMÍNIO DIGITAL · SOMBRA DIGITAL (100 Hz)'"></text>
+                          x-text="activeTab === 'real' ? 'DOMÍNIO DIGITAL · MATLAB (20 Hz) + TCP + LARAVEL' : 'DOMÍNIO DIGITAL · SOMBRA DIGITAL (100 Hz)'"></text>
 
                     <rect x="655" y="12" width="372" height="232" rx="10" fill="rgba(251,146,60,0.04)" stroke="#fb923c" stroke-dasharray="6,4" stroke-opacity="0.45"/>
                     <text x="668" y="30" fill="#fdba74" font-size="11" font-weight="600">PLANTA FÍSICA · KIT ELWE LTR701 (KIT 001)</text>
@@ -570,7 +573,7 @@
                         <rect x="250" y="56" width="182" height="76" rx="8" fill="#1e293b"
                               :stroke="selectedBlock === 'pi' ? '#22c55e' : (diag().enabled ? '#38bdf8' : '#ef4444')" stroke-width="2.2"/>
                         <text x="341" y="75" text-anchor="middle" fill="#e2e8f0" font-size="11" font-weight="700">CONTROLADOR PI DIGITAL</text>
-                        <text x="341" y="92" text-anchor="middle" fill="#94a3b8" font-size="10">u(k) = Kp·e(k) + i(k)  [Ts=10ms]</text>
+                        <text x="341" y="92" text-anchor="middle" fill="#94a3b8" font-size="10">u(k) = Kp·e(k) + i(k)  [20 Hz]</text>
                         <text x="341" y="110" text-anchor="middle" fill="#38bdf8" font-size="11" font-family="monospace"
                               x-text="'Kp=' + fmt(diag().kp, 3) + ' | Ki=' + fmt(diag().ki, 3)"></text>
                         <text x="341" y="125" text-anchor="middle" font-size="10" font-weight="700"
@@ -586,21 +589,22 @@
                     <g class="svg-block" @click="selectedBlock = 'daq'">
                         <rect x="482" y="56" width="156" height="148" rx="8" fill="#172554"
                               :stroke="selectedBlock === 'daq' ? '#38bdf8' : '#3b82f6'" stroke-width="2"/>
-                        <text x="560" y="78" text-anchor="middle" fill="#bfdbfe" font-size="11" font-weight="700">NI-USB-6003 (Dev3)</text>
-                        <text x="560" y="98" text-anchor="middle" fill="#93c5fd" font-size="10">Saída Analógica AO0</text>
-                        <text x="560" y="113" text-anchor="middle" fill="#e2e8f0" font-size="10" font-family="monospace">0–9.5 V → ACT 2</text>
-                        <line x1="498" y1="130" x2="622" y2="130" stroke="#3b82f6" stroke-dasharray="3,3"/>
-                        <text x="560" y="150" text-anchor="middle" fill="#93c5fd" font-size="10">Entrada SingleEnded AI0</text>
-                        <text x="560" y="165" text-anchor="middle" fill="#e2e8f0" font-size="10" font-family="monospace">SENSOR 2 → 0–10 V</text>
+                        <text x="560" y="78" text-anchor="middle" fill="#bfdbfe" font-size="11" font-weight="700">NI-USB-6003 (Dev1)</text>
+                        <text x="560" y="96" text-anchor="middle" fill="#93c5fd" font-size="10">AO0 → Aquecedor (0–9.5V)</text>
+                        <text x="560" y="112" text-anchor="middle" fill="#fde047" font-size="10" font-family="monospace"
+                              x-text="'AO1 Fan: ' + fmt(diag().uFan, 2) + ' V'"></text>
+                        <line x1="498" y1="128" x2="622" y2="128" stroke="#3b82f6" stroke-dasharray="3,3"/>
+                        <text x="560" y="148" text-anchor="middle" fill="#93c5fd" font-size="10">Entrada SingleEnded AI0</text>
+                        <text x="560" y="164" text-anchor="middle" fill="#e2e8f0" font-size="10" font-family="monospace">SENSOR 2 → 0–10 V</text>
                         <text x="560" y="188" text-anchor="middle" fill="#94a3b8" font-size="9">Acoplamento direto 0–10 V</text>
                     </g>
 
                     <line x1="638" y1="94" x2="682" y2="94" stroke="#f59e0b" stroke-width="2" marker-end="url(#arrowWarn)"/>
                     <text x="660" y="84" text-anchor="middle" fill="#fdba74" font-size="10">0–9.5 V</text>
 
-                    {{-- Perturbação (Vazão fixa/válvula) --}}
+                    {{-- Perturbação / Soprador --}}
                     <line x1="782" y1="36" x2="782" y2="54" stroke="#ef4444" stroke-width="2" marker-end="url(#arrowWarn)"/>
-                    <text x="855" y="45" fill="#fca5a5" font-size="10">Vazão fixa / Válvula manual</text>
+                    <text x="855" y="45" fill="#fca5a5" font-size="10">Soprador (AO1) / Válvula</text>
 
                     {{-- Planta Física --}}
                     <g class="svg-block" @click="selectedBlock = 'plant'">
@@ -638,7 +642,7 @@
                         <rect x="206" y="168" width="226" height="58" rx="8" fill="#1e293b"
                               :stroke="selectedBlock === 'sensor' ? '#a78bfa' : '#38bdf8'" stroke-width="2"/>
                         <text x="319" y="187" text-anchor="middle" fill="#c4b5fd" font-size="10.5" font-weight="700">
-                            CALIBRAÇÃO + FILTRO 12,5 Hz
+                            CALIBRAÇÃO + FILTRO PASSA-BAIXAS
                         </text>
                         <text x="319" y="208" text-anchor="middle" fill="#38bdf8" font-size="10.5" font-family="monospace">
                             T(V) = 10.4 · V + 0.0795
@@ -659,19 +663,19 @@
         </div>
     </div>
 
-    {{-- Logs de Comandos --}}
+    {{-- Logs de Auditoria Criptografados (Visível apenas para Administradores) --}}
     @if ($isAdmin)
     <div class="card panel-card rounded-3">
         <div class="card-header bg-transparent border-secondary-subtle d-flex justify-content-between align-items-center py-2">
-            <span class="fw-semibold text-danger-emphasis small">Logs de Comandos Enviados ao MATLAB (Apenas Aba Real)</span>
+            <span class="fw-semibold text-danger-emphasis small">Logs de Auditoria Criptografados · MySQL (Acesso Exclusivo Admin)</span>
             <button type="button" class="btn btn-outline-danger btn-sm" @click="fetchLogs()">Atualizar</button>
         </div>
-        <div class="table-responsive" style="max-height: 200px;">
+        <div class="table-responsive" style="max-height: 220px;">
             <table class="table table-dark table-striped table-sm align-middle mb-0 small">
                 <thead><tr><th>Data/Hora</th><th>Usuário</th><th>IP</th><th>Ação</th></tr></thead>
                 <tbody>
                     <template x-if="logs.length === 0">
-                        <tr><td colspan="4" class="text-center text-secondary py-2">Nenhum comando registrado ainda.</td></tr>
+                        <tr><td colspan="4" class="text-center text-secondary py-2">Nenhum evento registrado ainda.</td></tr>
                     </template>
                     <template x-for="log in logs" :key="log.id">
                         <tr>
@@ -710,7 +714,7 @@ function ltr701TempApp() {
         devices: [],
         realReadings: [],
         latestReal: null,
-        realDisplay: { temp: null, tempV: null, uTemp: null, error: null, tauTemp: 5.157, rttMs: null, device: '' },
+        realDisplay: { temp: null, tempV: null, uTemp: null, uFan: null, error: null, tauTemp: 5.157, rttMs: null, device: '' },
         realState: { enable_temp: false, setpoint_temp: 40.0, kp_temp: 0.800, ki_temp: 0.300, pending_commands: 0 },
         realForm: { spTemp: 40.0, kpTemp: 0.800, kiTemp: 0.300 },
 
@@ -741,7 +745,7 @@ function ltr701TempApp() {
             // Displays numéricos fixos em 1 Hz
             setInterval(() => this.syncDisplays(), 1000);
 
-            // Polling da Planta Real em 1 Hz para manter o servidor Windows leve
+            // Polling da Planta Real em 1 Hz
             setInterval(() => {
                 if (this.activeTab === 'real') {
                     this.fetchRealHistory(false);
@@ -756,6 +760,7 @@ function ltr701TempApp() {
                     temp: r.temp,
                     tempV: r.temp_v,
                     uTemp: r.u_temp,
+                    uFan: r.u_fan ?? 0,
                     error: r.error ?? (this.realState.setpoint_temp - r.temp),
                     tauTemp: r.tau_temp ?? 5.157,
                     rttMs: r.rtt_ms ?? 0,
@@ -791,7 +796,7 @@ function ltr701TempApp() {
         boardStatusText() {
             const online = this.devices.find(d => d.online);
             if (online) return `Conectado · ${online.device_id} (${online.ip} · último pacote ${online.last_iso})`;
-            return 'Aguardando conexão do MATLAB (execute temperature_client_node.m)';
+            return 'Aguardando conexão do MATLAB na ponte TCP (porta 2000)';
         },
 
         // ---------- COMANDOS E LEITURA REAL ----------
@@ -813,14 +818,21 @@ function ltr701TempApp() {
                     headers: { 'Content-Type': 'application/json', 'Accept': 'application/json', 'X-CSRF-TOKEN': csrf },
                     body: JSON.stringify({ name, value })
                 });
+
+                if (res.status === 401 || res.status === 419) {
+                    this.notify('Sessão expirada. Redirecionando para o login...', 'error');
+                    window.location.href = '/login';
+                    return;
+                }
+
                 const data = await res.json();
                 if (!res.ok) {
                     this.notify(data.message || 'Erro ao enviar comando.', 'error');
                     return;
                 }
                 this.realState = data.state;
-                if (showToast) this.notify(`Comando "${name}" enviado ao MATLAB.`);
-                if (isAdmin && showToast) this.fetchLogs();
+                if (showToast) this.notify(`Comando "${name}" gravado no banco e enviado ao MATLAB.`);
+                if (isAdmin) this.fetchLogs();
             } catch (err) {
                 this.notify('Erro de comunicação com o Laravel: ' + err.message, 'error');
             }
@@ -832,7 +844,12 @@ function ltr701TempApp() {
                 const res = await fetch(`/panel/history?limit=80&device_id=${devParam}`, {
                     headers: { 'Accept': 'application/json' }
                 });
+                if (res.status === 401) {
+                    window.location.href = '/login';
+                    return;
+                }
                 if (!res.ok) return;
+
                 const data = await res.json();
                 this.devices      = data.devices || [];
                 this.realReadings = data.readings || [];
@@ -852,6 +869,11 @@ function ltr701TempApp() {
                 }
                 this.updateChartPair(realTempChart, realErrorChart, this.realReadings, this.realState.setpoint_temp);
             } catch (_) {}
+        },
+
+        downloadRealCsv() {
+            const devParam = encodeURIComponent(this.selectedDevice);
+            window.location.href = `/panel/export-csv?device_id=${devParam}`;
         },
 
         // ---------- SOMBRA DIGITAL (TEMPERATURA · KIT 001) ----------
@@ -881,7 +903,7 @@ function ltr701TempApp() {
 
         stepSimEngine() {
             const subSteps = 50;
-            const dt = 0.01; // 50 * 10 ms = 0.5 s
+            const dt = 0.01;
             const m  = this.simModel;
             const st = this.simState;
             let { temp: t, iTemp, uTemp } = this.simPhys;
@@ -899,7 +921,6 @@ function ltr701TempApp() {
                     iTemp = 0; uTemp = 0;
                 }
 
-                // Modelo 1a ordem Kit 001: d(T - Tamb)/dt = b0*u - a0*(T - Tamb)
                 const dTdt = (m.b0 * uTemp) - (m.a0 * (t - m.tAmb));
                 t = Math.max(15, Math.min(115, t + dTdt * dt));
             }
@@ -1002,6 +1023,7 @@ function ltr701TempApp() {
                 ki: st.ki_temp,
                 enabled: st.enable_temp,
                 u: dsp.uTemp ?? 0,
+                uFan: this.activeTab === 'real' ? (dsp.uFan ?? 0) : 0,
                 tau: this.activeTab === 'real' ? (dsp.tauTemp ?? 5.157) : (1 / Math.max(0.01, this.simModel.a0))
             };
         },
@@ -1011,27 +1033,27 @@ function ltr701TempApp() {
             const map = {
                 sp: {
                     title: 'Referência / Setpoint (SP)',
-                    desc: `Alvo atual: ${this.fmt(d.sp, 1)} °C. Na aba Real, mover o slider envia o novo valor ao Laravel e o MATLAB sincroniza em até 0,5 s.`,
+                    desc: `Alvo atual: ${this.fmt(d.sp, 1)} °C. Na aba Real, mover o slider grava o comando criptografado no MySQL e atualiza o MATLAB via TCP em até 50 ms.`,
                     ref: 'LCON-I · Malha Fechada'
                 },
                 pi: {
-                    title: 'Controlador PI Digital (100 Hz no MATLAB)',
+                    title: 'Controlador PI Digital (20 Hz no MATLAB)',
                     desc: `Kp = ${this.fmt(d.kp, 3)}, Ki = ${this.fmt(d.ki, 3)}, erro = ${this.fmt(d.err, 2)} °C. Com anti-windup (0–9,5 V) e reset do integrador ao desligar.`,
                     ref: 'Ativ. 08 e 09'
                 },
                 daq: {
-                    title: 'Placa NI-USB-6003 (Dev3)',
-                    desc: 'Conexão direta 0–10 V com o Kit LTR701: AI0 lê o SENSOR 2 (SingleEnded) e AO0 comanda o ACTUATOR 2 (aquecedor).',
+                    title: 'Placa NI-USB-6003 (Dev1)',
+                    desc: 'AI0 lê o SENSOR 2 (SingleEnded), AO0 comanda o aquecedor (ACTUATOR 2) e AO1 comanda o soprador (1,5 V normal / 3,0 V resfriamento / 0 V desligado).',
                     ref: 'Hardware DAQ'
                 },
                 plant: {
                     title: 'Planta Térmica · Kit ELWE LTR701 (Kit 001)',
-                    desc: 'Modelo identificado (fit 87,48%): G_T(s) = 0,8896 / (s + 0,1939), τ ≈ 5,157 s. Vazão de ar fixada manualmente no soprador.',
+                    desc: 'Modelo identificado (fit 87,48%): G_T(s) = 0,8896 / (s + 0,1939), τ ≈ 5,157 s.',
                     ref: 'Ativ. 07 · Parte C'
                 },
                 sensor: {
                     title: 'SENSOR 2 (Termopar K) + Filtro Passa-Baixas',
-                    desc: 'Tensão 0–10 V convertida por T(V) = 10,4·V + 0,0795 e filtrada digitalmente em fc = 12,5 Hz (Tustin) antes do cálculo do erro.',
+                    desc: 'Tensão 0–10 V convertida por T(V) = 10,4·V + 0,0795 e filtrada digitalmente (Tustin) antes do cálculo do erro.',
                     ref: 'Ativ. 07 · Parte A'
                 }
             };

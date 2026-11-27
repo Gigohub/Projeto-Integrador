@@ -3,6 +3,7 @@
 namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Support\Facades\Crypt;
 
 class AuditLog extends Model
@@ -11,6 +12,11 @@ class AuditLog extends Model
     public $timestamps = false;
     protected $fillable = ['user_id', 'ip', 'action_enc', 'ts'];
     protected $casts = ['ts' => 'datetime'];
+
+    public function user(): BelongsTo
+    {
+        return $this->belongsTo(User::class);
+    }
 
     public static function record(string $action, ?int $userId = null): void
     {

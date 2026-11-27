@@ -1,209 +1,433 @@
-# Projeto Integrador (SCOM + LCON-I) — Supervisório e Sombra Digital do Kit ELWE LTR701
+# Projeto Integrador (SCOM + LCON-I) — Supervisório Térmico ELWE LTR701
 
-**Instituição:** UNESP — Câmpus de Sorocaba (ICT)  
-**Disciplinas:** Sistemas Computacionais (SCOM) e Laboratório de Controle I (LCON-I)  
+**Instituição:** UNESP — Câmpus de Sorocaba (ICT)
+
+**Disciplinas:** Sistemas Computacionais (SCOM) e Laboratório de Controle I (LCON-I)
+
 **Integrantes:**
+
 * Caio Gabriel Pereira de Morais — RA: `241270626`
 * João Augusto Oliveira Candido da Silva — RA: `241270847`
 * Lucas Yuta Ameda — RA: `241270618`
 * Pedro Henrique de Melo Rosa — RA: `241270031`
 
----
+## 1. O que o Sistema Faz e o que Ele Opera
 
-## 1. Visão Geral do Projeto
+Este repositório implementa uma plataforma completa de **monitoramento, controle digital em malha fechada, simulação externa e auditoria criptografada** para o soprador térmico didático **ELWE LTR701 (Kit 001)**.
 
-Este sistema é uma plataforma web completa de **monitoramento, controle remoto em malha fechada e simulação (Sombra Digital)** para o soprador térmico didático **ELWE LTR701** (utilizado nas aulas de LCON-I, especificamente o **Kit 001**).
+Na arquitetura final validada em bancada (**sem ESP32**), o **MATLAB** atua como controlador de tempo real diretamente sobre a placa **NI-USB-6003**, enquanto o **site Laravel** atua como interface web segura e camada de persistência em banco de dados.
 
-Ele integra os requisitos das duas disciplinas em uma única aplicação:
-* **Lado SCOM:** backend RESTful seguro em **Laravel (PHP 8.3+)** com banco de dados relacional (**MySQL/SQLite**), autenticação com controle de acesso por perfil (`admin` e `user`), criptografia **AES-256-CBC** para leituras, comandos e logs de auditoria, além de dashboard em tempo real.
-* **Lado LCON-I:** controle digital **Proporcional-Integral (PI)** a $100\text{ Hz}$ ($T_s = 0{,}01\text{ s}$) para **Vazão** ($\text{kg/h}$) e **Temperatura** ($^\circ\text{C}$), filtro passa-baixas digital ($f_c = 12{,}5\text{ Hz}$), curvas experimentais de calibração dos sensores e uma **Sombra Digital isolada** para ensaios sem risco à planta física.
-
----
-
-## 2. Como o Sistema Funciona (Arquitetura)
-
-O fluxo de dados conecta a bancada física (via **MATLAB + NI-USB-6003** ou via **ESP32 + Circuito de Condicionamento**) ao servidor Laravel e à interface web no navegador:
+### 1.1. Fluxo de Operação (Arquitetura Validada)
 
 ```text
-[Kit ELWE LTR701] <==(0..10 V)==> [NI-USB-6003 + MATLAB] ou [Condicionador + ESP32]
-                                                |
-                         HTTP REST (Wi-Fi) ou Web Serial (USB 115200 baud)
-                                                v
-                           [Backend Laravel (web/) + MySQL (AES-256-CBC)]
-                                                |
-                                                v
-                 [Dashboard Web: Planta Real | Sombra Digital | Diagrama SVG]
+[Kit ELWE LTR701] <==(0..10 V)==> [NI-USB-6003 (Dev1)] <==> [MATLAB (20 Hz)]
+                                                                 ^
+                                                     TCP 127.0.0.1:2000 (20 Hz)
+                                                                 v
+                                                     [web/tcp_bridge.php]
+                                                        /            \
+                          Estado rapido (JSON)         /              \  Persistencia 2 Hz (AES-256-CBC)
+                                                      v                v
+                                       [Laravel (porta 8000)] <==> [MySQL: projeto_integrador]
+                                                      ^
+                                                 HTTP / Login
+                                                      v
+                                        [Navegador: Admin ou Operador]
 ```
 
-### 2.1. Estrutura de Arquivos Principais
+### 1.2. O que Cada Módulo Opera
 
-| Caminho | Responsabilidade |
+* **Controlador Real (`hardware/matlab/temperature_client_node.m`):**
+  * Roda a malha fechada a $20\text{ Hz}$ ($T_s = 0{,}05\text{ s}$) com leitura do **SENSOR 2 (Termopar Tipo K)** convertida por $T(V) = 10{,}4 \cdot V + 0{,}0795$ ($^\circ\text{C}$) e filtro passa-baixas digital bilinear ($f_c = 4\text{ Hz}$).
+  * Calcula o **Controlador PI Digital** com anti-windup e saturação segura em $0\text{ a }9{,}5\text{ V}$ no aquecedor (`AO 0` / **ACTUATOR 2**).
+  * Gerencia o soprador (`AO 1` / **ACTUATOR 1**) e o estado da malha por **flags recebidas do site** (`flag_controlador` e `flag_soprador`), sem precisar fechar o MATLAB:
+    * **Controlador LIGADO (`flag_controlador = 1`, `flag_soprador = 1`):** o soprador opera em sinal constante de $1{,}5\text{ V}$ (`uFanConst`) enquanto o controlador PI varia a tensão do aquecedor (`AO 0`) para rastrear o setpoint.
+    * **Controlador DESLIGADO (`flag_controlador = 0`, `flag_soprador = 0`):** o integrador é zerado e o MATLAB envia $0{,}0\text{ V}$ no aquecedor (`AO 0`) e $0{,}0\text{ V}$ no soprador (`AO 1`) imediatamente, mantendo o script aberto e enviando as leituras de temperatura para o gráfico.
+  * Garante encerramento seguro via `onCleanup` ao pressionar `Ctrl + C`, zerando `[0.0, 0.0]` na placa NI e fechando o socket TCP.
+
+* **Simulador Externo (`hardware/matlab/temperature_simulator_node.m`):**
+  * Substitui a placa NI-USB-6003 fora do laboratório mantendo 100% do protocolo TCP, das flags e da lógica de controle PI com soprador constante.
+  * Emula a dinâmica térmica identificada do Kit 001:
+
+    $$
+    G_T(s) = \frac{0{,}8896}{s + 0{,}1939} \quad (\tau \approx 5{,}157\text{ s})
+    $$
+
+    com acoplamento convectivo do soprador, atraso de transporte ($\approx 0{,}8\text{ s}$) e ruído gaussiano no sensor.
+
+* **Ponte TCP (`web/tcp_bridge.php`):**
+  * Ouve na porta `127.0.0.1:2000`, responde instantaneamente ao MATLAB a $20\text{ Hz}$ com `flag_controlador`, `status`, `setpoint`, `kp` e `ki`, grava leituras criptografadas na tabela `readings` a $2\text{ Hz}$ e marca comandos como confirmados (`acked = 1`).
+
+* **Supervisório Web e Segurança (`web/`):**
+  * **Autenticação obrigatória** em `/login` com controle de acesso por perfil (**RBAC**): `admin` e `user`.
+  * **Criptografia em repouso (AES-256-CBC)** via `APP_KEY` do Laravel nas tabelas `readings` (`value_enc`), `commands` (`value_enc`) e `logs` (`action_enc`).
+  * **Auditoria restrita:** rota `GET /panel/logs` protegida por `EnsureAdmin` (retorna HTTP `403` para operadores comuns).
+  * **Visualização e Exportação:** gráfico em tempo real com janela deslizante de 80 amostras (`GET /panel/history`), Sombra Digital isolada no navegador, diagrama SVG interativo e **CSV Completo direto do MySQL** (`GET /panel/export-csv`) contendo todas as variações de setpoint, tensões de aquecedor/soprador e flags do ensaio inteiro.
+
+### 1.3. Estrutura Principal do Repositório
+
+| Caminho | Função |
 | :--- | :--- |
-| `web/routes/api.php` | Endpoints consumidos pelo hardware (`POST /api/readings`, `GET /api/commands`, `POST /api/commands/ack`), protegidos pelo middleware `device.token`. |
-| `web/routes/web.php` | Rotas de login/cadastro e endpoints internos do painel (`/panel/history`, `/panel/send`, `/panel/simulate`, `/panel/logs`). |
-| `web/app/Models/` | Models Eloquent (`Reading`, `Command`, `AuditLog`, `User`) que criptografam automaticamente os dados sensíveis antes de gravar no banco e descriptografam apenas na exibição autenticada. |
-| `web/app/Http/Middleware/` | `VerifyDeviceToken.php` (valida o cabeçalho `Authorization: Bearer <TOKEN>`) e `EnsureAdmin.php` (bloqueia rotas administrativas para usuários comuns). |
-| `web/app/Http/Controllers/AuthController.php` | Login, cadastro de operadores, logout e registro de auditoria. |
-| `web/app/Http/Controllers/TelemetryController.php` | Recepção de telemetria, conversão via parser matemático seguro das equações de calibração, fila de comandos, detecção de placas Wi-Fi (heartbeat) e cálculo de grandezas físicas. |
-| `web/resources/views/dashboard.blade.php` | Interface completa com Bootstrap 5, Alpine.js, Chart.js, Web Serial API, Sombra Digital acoplada e Diagrama de Blocos SVG interativo. |
-| `hardware/esp/ESP.ino` | Firmware base do ESP32 para leitura de sensores e comunicação HTTP com a API. |
-| `hardware/matlab/` | Scripts de aquisição/comunicação em MATLAB. |
+| `hardware/matlab/temperature_client_node.m` | Controlador PI real (NI-USB-6003 `Dev1` + Kit LTR701) via TCP porta `2000`. |
+| `hardware/matlab/temperature_simulator_node.m` | Simulador térmico externo (sem placa NI) via TCP porta `2000`. |
+| `web/tcp_bridge.php` | Ponte TCP em PHP que conecta o MATLAB ao Laravel e grava no MySQL. |
+| `web/routes/web.php` | Rotas autenticadas (`/`, `/panel/history`, `/panel/send`, `/panel/export-csv`, `/panel/logs`). |
+| `web/app/Http/Controllers/TelemetryController.php` | Leitura/escrita criptografada no MySQL, exportação CSV completa e cache rápido de estado. |
+| `web/app/Http/Controllers/AuthController.php` | Login, cadastro de operadores, logout e auditoria de sessão. |
+| `web/app/Http/Middleware/EnsureAdmin.php` | Bloqueio RBAC (HTTP `403`) das rotas administrativas para perfil `user`. |
+| `web/app/Models/{Reading,Command,AuditLog,User}.php` | Models Eloquent com criptografia/descriptografia automática em AES-256-CBC. |
+| `web/resources/views/dashboard.blade.php` | Painel em tempo real (Bootstrap 5 + Alpine.js + Chart.js + SVG interativo). |
+| `web/resources/views/login.blade.php` | Tela de autenticação e cadastro de operadores. |
 
-### 2.2. Separação Visual e Lógica das Duas Abas
+## 2. O que Precisa Fora do Código (Pré-requisitos)
 
-Para evitar que testes de sintonia afetem a bancada real (requisito explícito de LCON-I), a interface possui duas abas com layout clonado, porém totalmente isoladas:
+### 2.1. Software Necessário no Computador do Laboratório
 
-1. **Aba 1 — Planta Real (Faixa Verde):**
-   * Possui **seletor de placa/porta estilo Arduino IDE**: detecta automaticamente placas na rede Wi-Fi que chamam a API (exibindo IP e status Online/Offline) e permite conectar placas diretamente via cabo USB pela **Web Serial API** (Chrome/Edge, `115200 baud`, com Monitor Serial integrado).
-   * Os sliders de Setpoint, $K_p$ e $K_i$ enviam comandos diretamente para a fila da placa selecionada (com *debounce* de $280\text{ ms}$) e gravam logs criptografados no banco.
-2. **Aba 2 — Sombra Digital (Faixa Roxa):**
-   * Clone exato da aba real rodando **100% no navegador**, sem enviar nenhum comando ao hardware nem gravar nada no MySQL.
-   * Permite injetar perturbações na válvula ou na temperatura, abrir a gaveta de configuração da planta $G(s)$ e rodar o ensaio determinístico em degrau (discretização bilinear/Tustin a $100\text{ Hz}$).
-3. **Taxas de Atualização e Estabilidade Visual:**
-   * Os **3 gráficos** (Unificado de interferência cruzada + Vazão individual + Temperatura individual) atualizam a **$2\text{ Hz}$** ($2\text{ pontos/s}$) para resposta fluida.
-   * Os **6 cards numéricos** atualizam a **$1\text{ Hz}$** ($1\text{ vez/s}$) com arredondamento fixo de **3 casas decimais** e largura tabular fixa para evitar trepidação horizontal dos dígitos.
-4. **Diagrama de Blocos SVG Interativo:**
-   * Fica abaixo dos gráficos, reflete ao vivo os valores da aba e da malha selecionada e exibe explicações de diagnóstico ao clicar em qualquer bloco.
+1. **XAMPP (Windows):** fornece **MySQL** (porta `3306`) e **PHP** $8.3+$ (geralmente em `C:\xampp\php\php.exe`).
+2. **Composer:** necessário apenas se a pasta `web/vendor/` não tiver sido copiada junto com o projeto.
+3. **MATLAB (R2021b ou superior):**
+   * Para a **bancada real:** exige **Data Acquisition Toolbox** + driver **NI-DAQmx** instalado no Windows.
+   * Para o **simulador externo:** exige apenas MATLAB com suporte a `tcpclient` (não precisa de driver NI).
+4. **Navegador atualizado:** Google Chrome ou Microsoft Edge.
 
----
+### 2.2. Hardware e Ligação Física (Somente Modo Planta Real)
 
-## 3. De Onde Foram Retiradas as Informações e Equações
+* **Equipamentos:** Kit Didático **ELWE LTR701 (Kit 001)**, placa **NI-USB-6003** com cabo USB e **5 cabos** de conexão (sinal + terras).
+* **Chaves do Painel do Kit LTR701:** coloque **ACTUATOR 1 (Soprador)** e **ACTUATOR 2 (Aquecedor)** na posição **`extern`**.
+* **Válvula Manual de Entrada de Ar:** mantenha na **posição vertical (aberta)** — nunca bloqueie totalmente o fluxo com o aquecedor ligado.
 
-Todos os parâmetros pré-carregados no supervisório foram extraídos diretamente das atividades práticas de **LCON-I** realizadas pelo grupo no **Kit ELWE LTR701 (Kit 001)**:
-
-### 3.1. Calibração dos Sensores ($V \to \text{Grandeza Física}$)
-
-| Sensor do Kit LTR701 | Origem | Equação Obtida pelo Grupo | Observação |
+| Pino na NI-USB-6003 | Borne no Kit ELWE LTR701 | Faixa / Modo | Função |
 | :--- | :--- | :--- | :--- |
-| **SENSOR 2** (Temperatura — Termopar Tipo K) | Atividade 07 (Parte A) | $T(x) = 10{,}4x + 0{,}0795$ ($^\circ\text{C}$) | Requer filtro passa-baixas digital com $f_c = 12{,}5\text{ Hz}$ antes do cálculo do erro. |
-| **SENSOR 5** (Vazão Mássica — *Air Mass Meter*) | Atividade 10 (Parte A) | $Q(x) = 3{,}94\,e^{0{,}617x}$ ($\text{kg/h}$) | Relação exponencial não-linear; substitui o polinômio genérico do roteiro. |
+| **`AI 0`** | **SENSOR 2** (Termopar K) | $0\text{ a }10\text{ V}$ (*SingleEnded*) | Leitura da temperatura do duto |
+| **`AI GND`** | **GND** dos sensores ($\perp$) | Referência $0\text{ V}$ | Terra obrigatório da entrada `AI 0` |
+| **`AO 0`** | **ACTUATOR 2** (Aquecedor) | $0\text{ a }9{,}5\text{ V}$ (PI $20\text{ Hz}$) | Sinal de controle variável do aquecedor |
+| **`AO 1`** | **ACTUATOR 1** (Soprador) | $0\text{ V}$ ou $1{,}5\text{ V}$ | Sinal constante ($1{,}5\text{ V}$) no ON e $0\text{ V}$ no OFF (via flags) |
+| **`AO GND`** | **GND** dos atuadores ($\perp$) | Referência $0\text{ V}$ | Terra obrigatório de `AO 0` e `AO 1` (sem ele o kit não responde) |
 
-> No painel web, ambas as equações podem ser editadas em tempo real em função de `x` (tensão em Volts de $0\text{ a }10\text{ V}$) e são avaliadas por um parser matemático seguro no backend quando o hardware envia tensões brutas (`flow_v` / `temp_v`).
+## 3. Preparação em um Computador Novo (Primeira Execução)
 
-### 3.2. Funções de Transferência da Planta $G(s)$
+Execute esta sequência apenas na **primeira vez** que instalar o projeto em um computador do laboratório.
 
-| Malha | Origem | Função de Transferência | Detalhes da Identificação |
-| :--- | :--- | :--- | :--- |
-| **Vazão** (ACTUATOR 1 $\to$ SENSOR 5) | Atividade 10 (Partes B e C) | $G_{Q1}(s) = \dfrac{10{,}14}{s + 1{,}037}$ *(1ª ordem, fit $76{,}61\%$)*<br>$G_{Q2}(s) = \dfrac{19{,}16}{s^2 + 4{,}564s + 1{,}902}$ *(2ª ordem, fit $92{,}07\%$)* | Degrau de $10\text{ V}$ por $10\text{ s}$ a $100\text{ Hz}$ (`script01.m` + `tfest` no `script02.m`). Constante de tempo dominante $\tau_{vaz} \approx 0{,}964\text{ s}$. |
-| **Temperatura** (ACTUATOR 2 $\to$ SENSOR 2) | Atividade 07 (Partes B e C) e Colab PI | Exemplo base: $G_{T}(s) = \dfrac{2{,}0}{s + 0{,}4}$ *(constante $\tau_{temp0} = 2{,}500\text{ s}$)* | Degrau de $10\text{ V}$ no aquecedor com ventilador a $3{,}0\text{ V}$ por $30\text{ s}$ a $100\text{ Hz}$ e atraso `tdelay = 1.16` s. *(Ajustável na gaveta da Sombra Digital caso o grupo rode nova identificação).* |
+### Passo 1 — Copiar ou clonar o repositório
 
-### 3.3. Técnica de Controle e Ganhos PI
-
-Em ambas as malhas utiliza-se um **Controlador PI Digital** na forma paralela com período de amostragem $T_s = 0{,}01\text{ s}$ ($100\text{ Hz}$) e saturação física compatível com o kit ($0\text{ a }9{,}5\text{ V}$ / $0\text{ a }10\text{ V}$):
-
-$$i(k) = i(k-1) + K_i \, e(k) \, T_s$$
-
-$$u(k) = K_p \, e(k) + i(k)$$
-
-* **Regra de segurança (requisito LCON-I):** quando a flag de habilitação (`enable`) vai para `0`, a parcela integral $i(k)$ é zerada imediatamente para evitar disparo ao religar o controle.
-* **Sintonia da Vazão (Atividade 11 — Domínio da Frequência / Bode):**
-  * Malha aberta: $G_m = \infty\text{ dB}$, $M_p = 93{,}1^\circ$ em $19{,}13\text{ rad/s}$.
-  * Projeto adotado: $\omega_{cg} = 3\text{ rad/s}$ e $pm = 80^\circ$, resultando em $K_p = 0{,}1657$ e $K_i = 0{,}2763$.
-* **Sintonia da Temperatura (Atividades 08 e 09 — *Root Locus*):**
-  * Folha de respostas da Ativ. 08: $K_p = 10$ e $K_i = 2$ (ajustáveis para baixo por fator de $2$ ou $10$ caso ocorra saturação na bancada); preset conservador inicial no site: $K_p = 0{,}800$ e $K_i = 0{,}300$.
-
-### 3.4. Física Acoplada e Variáveis Derivadas no Dashboard
-
-Para representar a interação real entre ventilador e aquecedor dentro do duto (diâmetro interno estimado $D \approx 50\text{ mm}$, área $A \approx 1{,}9635 \times 10^{-3}\text{ m}^2$), o sistema calcula em tempo real:
-
-* **Densidade do ar:** $\rho(T) = \dfrac{P_{atm}}{R_{ar}(T + 273{,}15)}$, com $P_{atm} = 101325\text{ Pa}$ e $R_{ar} = 287{,}05\text{ J/(kg}\cdot\text{K)}$.
-* **Velocidade real do ar no duto:** $v = \dfrac{\dot{m}/3600}{\rho(T) \cdot A}$ ($\text{m/s}$).
-* **Pressão estimada no tubo:** pressão manométrica $\Delta P = \frac{1}{2}\rho v^2 (1 + K_{perda})$ em $\text{Pa}$ e pressão absoluta em $\text{atm}$.
-* **Acoplamento cruzado:** aumentar a vazão aumenta o coeficiente de convecção forçada $h_{eff}(Q)$, reduzindo $\tau_{temp}$ e resfriando o duto (atuando como perturbação na malha de temperatura). Ruído estocástico sutil é adicionado na simulação em regime ambiente e amplificado sob aquecimento ativo para reproduzir o comportamento do sensor real.
-
----
-
-## 4. Como Subir o Sistema Localmente
-
-### 4.1. Pré-requisitos
-* PHP $8.3+$ e Composer instalados (ou ambiente XAMPP com PHP atualizado).
-* Banco MySQL rodando (ou SQLite padrão configurado no `web/.env`).
-* Navegador **Google Chrome** ou **Microsoft Edge** (necessário caso utilize a detecção USB via Web Serial API).
-
-### 4.2. Passo a Passo no Terminal
-
-```bash
-# 1. Entre na pasta da aplicação Laravel
-cd web
-
-# 2. Configure o arquivo .env (defina DB_* e adicione o token do dispositivo)
-# Exemplo obrigatório no web/.env:
-# DEVICE_API_TOKEN=token_secreto_ltr701
-
-# 3. Execute as migrations e popule os usuários iniciais
-php artisan migrate:fresh --seed
-
-# 4. Inicie o servidor local
-php artisan serve
+```powershell
+cd $HOME\Desktop
+git clone <URL_DO_REPOSITORIO> Projeto-Integrador
+cd Projeto-Integrador
 ```
 
-Acesse `http://127.0.0.1:8000` no navegador.
+*(Se trouxe por pen drive, apenas copie a pasta inteira para o Desktop e abra o PowerShell dentro dela.)*
 
-### 4.3. Credenciais Padrão (Seed)
+### Passo 2 — Ligar o MySQL e criar o banco `projeto_integrador`
 
-| Perfil | E-mail | Senha | Permissões |
+Abra o **XAMPP Control Panel** e clique em **Start** no **MySQL** (aguarde ficar verde na porta `3306`). Depois crie o banco via terminal:
+
+```powershell
+C:\xampp\mysql\bin\mysql.exe -u root -e "CREATE DATABASE IF NOT EXISTS projeto_integrador CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
+```
+
+### Passo 3 — Criar ou conferir o arquivo `web/.env`
+
+Como o `.env` não vai para o Git, crie `web/.env` com o conteúdo abaixo (padronizado em `http://127.0.0.1:8000` para evitar erro `419` de sessão/CSRF):
+
+```env
+APP_NAME="Soprador Termico - SCOM/LCON"
+APP_ENV=local
+APP_KEY=base64:XoMJDfJSOi9J/v0LkA2U5HgGZur5vT0Wj6vXOd2KV7w=
+APP_DEBUG=true
+APP_URL=http://127.0.0.1:8000
+
+APP_LOCALE=pt_BR
+APP_FALLBACK_LOCALE=en
+APP_FAKER_LOCALE=pt_BR
+
+DB_CONNECTION=mysql
+DB_HOST=127.0.0.1
+DB_PORT=3306
+DB_DATABASE=projeto_integrador
+DB_USERNAME=root
+DB_PASSWORD=
+
+SESSION_DRIVER=database
+SESSION_LIFETIME=120
+SESSION_ENCRYPT=false
+SESSION_PATH=/
+SESSION_DOMAIN=null
+
+CACHE_STORE=database
+QUEUE_CONNECTION=database
+FILESYSTEM_DISK=local
+
+DEVICE_API_TOKEN=token_do_dispositivo_123
+BCRYPT_ROUNDS=12
+```
+
+### Passo 4 — Instalar dependências, criar tabelas e popular usuários (Comando Único)
+
+No PowerShell, na raiz do projeto:
+
+```powershell
+cd web
+$php = if (Get-Command php -ErrorAction SilentlyContinue) { "php" } else { "C:\xampp\php\php.exe" }
+if (!(Test-Path "vendor")) { composer install }
+Remove-Item storage\app\ltr701_*.json -ErrorAction SilentlyContinue
+& $php artisan migrate:fresh --seed
+& $php artisan optimize:clear
+Write-Host "[OK] Ambiente pronto!" -ForegroundColor Green
+```
+
+### Passo 5 — Conferir o ID da NI-USB-6003 (apenas na bancada real)
+
+No *Command Window* do MATLAB, execute:
+
+```matlab
+daqlist("ni")
+```
+
+Verifique o valor da coluna `DeviceID` (ex.: `Dev1`, `Dev2` ou `Dev3`). Se for diferente de `"Dev1"`, altere a linha `dev_name = "Dev1";` em `hardware/matlab/temperature_client_node.m`.
+
+## 4. Como Atualizar o Projeto
+
+Sempre que puxar novas alterações do GitHub em um computador que já teve o setup feito:
+
+```powershell
+# 1. Na raiz do projeto, baixe as atualizacoes
+git pull
+
+# 2. Atualize dependencias (se composer.json mudou), banco e caches
+cd web
+$php = if (Get-Command php -ErrorAction SilentlyContinue) { "php" } else { "C:\xampp\php\php.exe" }
+if (Test-Path "composer.json") { composer install --no-interaction }
+& $php artisan migrate --force
+& $php artisan optimize:clear
+Remove-Item storage\app\ltr701_*.json -ErrorAction SilentlyContinue
+```
+
+> **Atenção:** se o `php tcp_bridge.php` ou o `php artisan serve` estiverem abertos durante a atualização, encerre ambos (`Ctrl + C` ou `parar_ltr701.bat`) e inicie novamente para carregar o código novo em memória. Se quiser zerar todos os ensaios antigos do banco para começar uma bateria limpa, rode `& $php artisan migrate:fresh --seed`.
+
+## 5. Uso e Inicialização Automática
+
+### Opção A — Scripts Automáticos de 1 Clique (`iniciar_ltr701.bat` e `parar_ltr701.bat`)
+
+Salve os dois arquivos abaixo na **raiz do projeto** (ao lado das pastas `web/` e `hardware/`). O `iniciar_ltr701.bat` detecta PHP e MATLAB automaticamente, verifica/inicia o MySQL do XAMPP, limpa caches, abre Laravel + Ponte TCP + Navegador e dispara o MATLAB em modo interativo (`-nosplash -nodesktop -r`) para manter o `Ctrl + C` seguro.
+
+#### `iniciar_ltr701.bat`
+
+```bat
+@echo off
+setlocal EnableDelayedExpansion
+title LTR701 - Inicializador Automatico (SCOM / LCON-I)
+color 0A
+
+set "ROOT_DIR=%~dp0"
+if "%ROOT_DIR:~-1%"=="\" set "ROOT_DIR=%ROOT_DIR:~0,-1%"
+set "WEB_DIR=%ROOT_DIR%\web"
+set "MATLAB_DIR=%ROOT_DIR%\hardware\matlab"
+
+echo ========================================================================
+echo   SUPERVISORIO ELWE LTR701 - INICIALIZACAO AUTOMATICA DE LABORATORIO
+echo ========================================================================
+echo.
+
+:: 1. Localizar PHP (PATH ou XAMPP)
+set "PHP_EXE="
+where php >nul 2>nul && set "PHP_EXE=php"
+if not defined PHP_EXE if exist "C:\xampp\php\php.exe" set "PHP_EXE=C:\xampp\php\php.exe"
+if not defined PHP_EXE (
+    color 0C
+    echo [ERRO] PHP nao encontrado no PATH nem em C:\xampp\php\php.exe!
+    pause
+    exit /b 1
+)
+echo [OK] PHP detectado: %PHP_EXE%
+
+:: 2. Verificar se o MySQL (porta 3306) esta ativo; tenta iniciar pelo XAMPP se fechado
+powershell -NoProfile -Command "if (Test-NetConnection -ComputerName 127.0.0.1 -Port 3306 -InformationLevel Quiet) { exit 0 } else { exit 1 }"
+if errorlevel 1 (
+    echo [AVISO] MySQL nao respondeu na porta 3306. Tentando iniciar MySQL do XAMPP...
+    if exist "C:\xampp\mysql_start.bat" (
+        start "LTR701 - MySQL XAMPP" /min cmd /c "C:\xampp\mysql_start.bat"
+        timeout /t 4 /nobreak >nul
+    ) else (
+        echo [ERRO] Abra o XAMPP Control Panel e inicie o MySQL antes de continuar.
+        pause
+        exit /b 1
+    )
+)
+echo [OK] MySQL ativo na porta 3306.
+
+:: 3. Menu de modo de operacao
+echo.
+echo Selecione o modo de execucao do MATLAB:
+echo   [1] Planta Real - NI-USB-6003 (temperature_client_node.m)
+echo   [2] Simulador Externo - Sem bancada (temperature_simulator_node.m)
+echo   [3] Somente Site Laravel + Ponte TCP (abrir MATLAB manualmente)
+echo.
+set /p MODO="Digite 1, 2 ou 3 e pressione ENTER: "
+
+:: 4. Limpar estado JSON antigo e caches do Laravel
+echo.
+echo [PREP] Limpando cache e preparando servidor...
+del /q "%WEB_DIR%\storage\app\ltr701_*.json" 2>nul
+pushd "%WEB_DIR%"
+"%PHP_EXE%" artisan optimize:clear >nul 2>nul
+popd
+
+:: 5. Subir Terminal 1 (Laravel) e Terminal 2 (Ponte TCP porta 2000)
+echo [START] Iniciando Laravel em http://127.0.0.1:8000 ...
+start "LTR701 - 1. Site Laravel (Porta 8000)" cmd /k "cd /d "%WEB_DIR%" && "%PHP_EXE%" artisan serve --host=127.0.0.1 --port=8000"
+
+echo [START] Iniciando Ponte TCP em 127.0.0.1:2000 ...
+start "LTR701 - 2. Ponte TCP (Porta 2000)" cmd /k "cd /d "%WEB_DIR%" && "%PHP_EXE%" tcp_bridge.php"
+
+:: Aguarda a ponte TCP abrir a porta 2000 antes do MATLAB conectar
+timeout /t 3 /nobreak >nul
+
+:: 6. Abrir o navegador direto na tela de login
+echo [WEB] Abrindo navegador em http://127.0.0.1:8000/login ...
+start "" "http://127.0.0.1:8000/login"
+
+if "%MODO%"=="3" goto :FIM
+
+:: 7. Localizar automaticamente a versao mais recente do MATLAB instalada
+set "MATLAB_EXE="
+for /f "delims=" %%D in ('dir /b /ad /o-n "C:\Program Files\MATLAB\R*" 2^>nul') do (
+    if not defined MATLAB_EXE if exist "C:\Program Files\MATLAB\%%D\bin\matlab.exe" (
+        set "MATLAB_EXE=C:\Program Files\MATLAB\%%D\bin\matlab.exe"
+    )
+)
+
+if not defined MATLAB_EXE (
+    echo [AVISO] MATLAB nao encontrado em C:\Program Files\MATLAB\.
+    echo         Abra o MATLAB manualmente e execute o script em: %MATLAB_DIR%
+    goto :FIM
+)
+echo [OK] MATLAB detectado: %MATLAB_EXE%
+
+if "%MODO%"=="1" (
+    echo [MATLAB] Iniciando controlador REAL ^(temperature_client_node^)...
+    start "LTR701 - 3. MATLAB Planta Real" "%MATLAB_EXE%" -nosplash -nodesktop -sd "%MATLAB_DIR%" -r "temperature_client_node"
+) else (
+    echo [MATLAB] Iniciando SIMULADOR externo ^(temperature_simulator_node^)...
+    start "LTR701 - 3. MATLAB Simulador" "%MATLAB_EXE%" -nosplash -nodesktop -sd "%MATLAB_DIR%" -r "temperature_simulator_node"
+)
+
+:FIM
+echo.
+echo ========================================================================
+echo   SISTEMA INICIADO COM SUCESSO!
+echo   Login Admin   : admin@unesp.br    / 12345678
+echo   Login Operador: operador@unesp.br / 12345678
+echo   IMPORTANTE    : Para encerrar na bancada, aperte Ctrl+C no MATLAB!
+echo ========================================================================
+pause
+```
+
+#### `parar_ltr701.bat`
+
+```bat
+@echo off
+title LTR701 - Encerramento de Servicos
+echo ========================================================================
+echo   ATENCAO: Antes de prosseguir, clique em DESLIGAR no site e pressione
+echo            Ctrl+C na janela do MATLAB para zerar AO0 e AO1 com seguranca!
+echo ========================================================================
+pause
+
+echo [STOP] Encerrando janelas do Laravel e da Ponte TCP...
+taskkill /FI "WINDOWTITLE eq LTR701 - 1. Site Laravel*" /T /F >nul 2>nul
+taskkill /FI "WINDOWTITLE eq LTR701 - 2. Ponte TCP*" /T /F >nul 2>nul
+
+echo [OK] Portas 8000 e 2000 liberadas.
+pause
+```
+
+### Opção B — Prompt Único no PowerShell (Sem Criar `.bat`)
+
+Cole na raiz do projeto trocando `$scriptMatlab` conforme o cenário:
+
+```powershell
+$scriptMatlab = "temperature_client_node"   # Use "temperature_simulator_node" fora do laboratorio
+$root   = (Get-Location).Path
+$webDir = Join-Path $root "web"
+$matDir = Join-Path $root "hardware\matlab"
+$php    = if (Get-Command php -ErrorAction SilentlyContinue) { "php" } else { "C:\xampp\php\php.exe" }
+
+Remove-Item "$webDir\storage\app\ltr701_*.json" -ErrorAction SilentlyContinue
+& $php "$webDir\artisan" optimize:clear
+
+Start-Process powershell -ArgumentList "-NoExit", "-Command", "cd '$webDir'; & '$php' artisan serve --host=127.0.0.1 --port=8000"
+Start-Process powershell -ArgumentList "-NoExit", "-Command", "cd '$webDir'; & '$php' tcp_bridge.php"
+Start-Sleep -Seconds 3
+Start-Process "http://127.0.0.1:8000/login"
+
+$matlab = Get-ChildItem "C:\Program Files\MATLAB\R*\bin\matlab.exe" -ErrorAction SilentlyContinue | Sort-Object FullName -Descending | Select-Object -First 1
+if ($matlab) {
+    Start-Process $matlab.FullName -ArgumentList "-nosplash", "-nodesktop", "-sd", "`"$matDir`"", "-r", $scriptMatlab
+} else {
+    Write-Warning "MATLAB nao encontrado automaticamente. Execute '$scriptMatlab' manualmente em $matDir"
+}
+```
+
+### Opção C — Prompt Automático para Agente no VS Code (Copilot / Cursor / Claude Code)
+
+Se abrir o projeto no VS Code de outro computador usando um assistente de código com acesso ao terminal, cole este prompt:
+
+```text
+Prepare e inicie automaticamente o projeto Supervisório ELWE LTR701 neste computador Windows:
+1. Verifique se PHP (PATH ou C:\xampp\php\php.exe) e MySQL (porta 3306) estão ativos; se o banco 'projeto_integrador' não existir, crie-o no MySQL.
+2. Em web/.env, garanta DB_CONNECTION=mysql, DB_DATABASE=projeto_integrador, DB_USERNAME=root, DB_PASSWORD=, APP_URL=http://127.0.0.1:8000 e SESSION_DRIVER=database.
+3. Em web/, se não existir vendor/, execute 'composer install'; remova storage/app/ltr701_*.json; execute 'php artisan migrate:fresh --seed' e 'php artisan optimize:clear'.
+4. Crie o arquivo iniciar_ltr701.bat na raiz (conforme o README.md) se ainda não existir e inicie em terminais separados:
+   - Terminal 1 (web/): php artisan serve --host=127.0.0.1 --port=8000
+   - Terminal 2 (web/): php tcp_bridge.php
+5. Localize o matlab.exe em C:\Program Files\MATLAB\R*\bin\matlab.exe e informe o comando pronto para rodar temperature_client_node (bancada real) ou temperature_simulator_node (simulador externo).
+6. Confirme que http://127.0.0.1:8000/login responde HTTP 200 e que a porta TCP 2000 está em LISTEN.
+```
+
+### Opção D — Inicialização Manual (3 Terminais)
+
+1. **Terminal 1 (`web/`):** `php artisan serve --host=127.0.0.1 --port=8000`
+2. **Terminal 2 (`web/`):** `php tcp_bridge.php` *(aguarde `[TCP] Ponte LTR701 ouvindo em 127.0.0.1:2000`)*
+3. **MATLAB:** abra `hardware/matlab/temperature_client_node.m` (bancada real) ou `temperature_simulator_node.m` (simulador) e clique em **Run**.
+4. **Navegador:** acesse `http://127.0.0.1:8000/login`.
+
+## 6. Credenciais, Operação Segura e Validação
+
+### 6.1. Credenciais Padrão (`DatabaseSeeder`)
+
+| Perfil (RBAC) | E-mail | Senha | Permissões |
 | :--- | :--- | :--- | :--- |
-| **Administrador** | `admin@unesp.br` | `12345678` | Controle total + visualização de **Logs de Auditoria** criptografados. |
-| **Operador** | `operador@unesp.br` | `12345678` | Controle da planta, telemetria, CSV e Sombra Digital (sem acesso aos logs). |
+| **Administrador** | `admin@unesp.br` | `12345678` | Controle total, CSV completo do banco e **Logs de Auditoria** (`/panel/logs`). |
+| **Operador (Cliente)** | `operador@unesp.br` | `12345678` | Monitoramento, comandos e CSV completo; **bloqueado com HTTP `403`** em `/panel/logs`. |
 
----
+### 6.2. Sequência Segura na Bancada
 
-## 5. Como Operar no Sistema Real (Kit ELWE LTR701)
+1. **Antes de ligar:** confirme os 5 cabos na NI-USB-6003 (especialmente `AI GND` e `AO GND`), válvula de entrada aberta e chaves **ACTUATOR 1/2** em **`extern`**.
+2. **Ligar:** energize o Kit LTR701, pressione **ENTER** no visor frontal do kit e execute `iniciar_ltr701.bat` escolhendo a opção `[1]`.
+3. **Desligar (ordem obrigatória):**
+   * Clique em **DESLIGAR** no site e confirme `FLAG_CTRL=0 | FLAG_FAN=0 | Aq(AO0)=0.00V | Fan(AO1)=0.00V` no MATLAB.
+   * Pressione **`Ctrl + C`** na janela do MATLAB e confirme `[CLEANUP] NI-USB-6003 zerada e liberada!`.
+   * Desligue o Kit LTR701 e, por fim, execute `parar_ltr701.bat`.
 
-### 5.1. Cuidados Elétricos Obrigatórios (Antes de Ligar Qualquer Cabo)
+### 6.3. Checklist de Validação Rápida (SCOM + LCON-I)
 
-Os sensores e atuadores do kit ELWE LTR701 trabalham no padrão industrial de **$0\text{ a }10\text{ V}$**. Existem duas formas de conectar o kit ao computador/site:
+* [ ] **Proteção de sessão:** abrir `http://127.0.0.1:8000` sem login redireciona para `/login`.
+* [ ] **RBAC (`user` vs. `admin`):** logado como `operador@unesp.br`, a tabela de logs não aparece e acessar `/panel/logs` retorna HTTP `403`.
+* [ ] **Controle PI + Soprador Constante:** logado como `admin@unesp.br`, ligar controlador, variar o setpoint (ex.: $40\,^\circ\text{C} \to 60\,^\circ\text{C} \to 35\,^\circ\text{C}$) e confirmar atuação do PI em `AO 0` com o soprador mantido constante em $1{,}5\text{ V}$ em `AO 1`.
+* [ ] **Desligamento por flags:** clicar em **DESLIGAR** zera aquecedor (`AO 0`) e soprador (`AO 1`) mantendo o MATLAB conectado.
+* [ ] **Criptografia AES-256-CBC:** abrir `http://localhost/phpmyadmin` no banco `projeto_integrador` e comprovar que `readings.value_enc`, `commands.value_enc` e `logs.action_enc` estão cifrados (`eyJpdiI6...`).
+* [ ] **Exportação completa:** clicar em **CSV Completo (BD)** e conferir que o arquivo baixado traz todo o ensaio (mais de 80 linhas) com todas as variações de setpoint, `u_temp_v`, `u_fan_v` e flags.
 
-1. **Via Placa de Aquisição NI-USB-6003 + MATLAB (Recomendado em LCON-I):**
-   * A NI-USB-6003 já opera nativamente em $0\text{ a }10\text{ V}$.
-   * **Conexões (Atividades 07, 09, 10 e 11):**
-     * `AI 0` e `AI GND` da NI-6003 $\to$ saída $0\text{--}10\text{ V}$ e referência ($\perp$) do **SENSOR 2** (temperatura) ou **SENSOR 5** (vazão).
-     * `AO 0` da NI-6003 $\to$ entrada $0\text{--}10\text{ V}$ do **ACTUATOR 2** (aquecedor) ou **ACTUATOR 1** (ventilador).
-     * `AO 1` da NI-6003 $\to$ entrada $0\text{--}10\text{ V}$ do **ACTUATOR 1** (quando o script controla temperatura mantendo o ventilador em $25\%$ / $2{,}5\text{--}3{,}0\text{ V}$).
-2. **Via Microcontrolador ESP32:**
-   * **ATENÇÃO — RISCO DE QUEIMA:** O ESP32 opera estritamente entre **$0\text{ e }3{,}3\text{ V}$**. **Nunca** ligue a saída de $10\text{ V}$ do kit diretamente no ADC do ESP32.
-   * É obrigatório utilizar o **circuito de condicionamento de sinais** (Atividades 08 e 09):
-     * **Entrada (Sensor $\to$ GPIO 34):** divisor de tensão com potenciômetro calibrado para reduzir $10\text{ V} \to 3{,}0\text{ V}$.
-     * **Saída (GPIO 25 $\to$ Atuador):** amplificador não-inversor com **LM741** alimentado em $\pm 15\text{ V}$ ($R = 1\text{ k}\Omega$ + potenciômetro $R_f$) ajustado no osciloscópio para ampliar $3{,}0\text{ V} \to 10\text{ V}$, conforme $G = 1 + \frac{R_f}{R}$.
+## 7. Diagnóstico Rápido (Solução de Problemas)
 
-### 5.2. Sequência Segura de Operação na Bancada
-
-1. **Inspeção inicial do Kit LTR701 (desligado):**
-   * Coloque os dois seletores manuais (**ACTUATOR 1** e **ACTUATOR 2**) na posição **`off`**.
-   * Coloque a válvula manual de entrada de ar na **posição vertical** (totalmente aberta).
-   * Confira todas as conexões de cabos banana-jacaré e o aterramento comum (`GND`).
-2. **Energização:**
-   * Ligue a fonte CC ($\pm 15\text{ V}$, se estiver usando o condicionador LM741 com ESP32).
-   * Ligue o kit LTR701 e pressione o botão **`ENTER`** no painel frontal para visualizar as medições ao vivo ($t_1$, $Q$, $P_H$, $P_M$).
-3. **Conexão com o Supervisório Web:**
-   * **Via Wi-Fi (REST API):** configure no `ESP.ino` ou no script MATLAB o endereço `http://<IP_DO_SERVIDOR>:8000/api` e o mesmo `DEVICE_API_TOKEN` definido no `web/.env`. Assim que a primeira requisição chegar em `/api/readings` ou `/api/commands`, a placa aparecerá automaticamente com bolinha verde (`● ONLINE`) no dropdown **Placa / Porta** da aba **Planta Real**.
-   * **Via Cabo USB (ESP32 direto no PC):** clique em **`+ Detectar Placa USB`** na aba **Planta Real**, selecione a porta COM correspondente (CP210x, CH340 ou Espressif USB) e acompanhe os dados no **Monitor Serial** integrado (`115200 baud`).
-4. **Execução do Controle e Teste de Perturbação:**
-   * Na aba **Planta Real**, selecione a placa desejada no dropdown, clique em **LIGAR** na malha correspondente e arraste o slider de Setpoint (ex.: $35\,^\circ\text{C} \to 50\,^\circ\text{C}$ na temperatura ou $50\text{ kg/h} \to 80\text{ kg/h}$ na vazão).
-   * Para testar a rejeição a perturbações em regime permanente, gire **parcialmente** a válvula manual de entrada de ar (**nunca feche totalmente a passagem de ar** com o aquecedor ligado) e observe o esforço de controle compensar a queda/elevação.
-5. **Desligamento Seguro (Ordem Inversa):**
-   * Clique em **DESLIGAR** nas malhas pelo site (zerando os sinais de controle e a parcela integral).
-   * Aguarde a temperatura do aquecedor baixar por alguns segundos com ventilação ou até estabilizar.
-   * Desligue o kit LTR701, reduza e desligue a fonte CC, desconecte o cabo USB/NI-6003 e só então desfaça os cabos banana-jacaré.
-
----
-
-## 6. Guia Rápido de Diagnóstico (Se o Real Divergir da Simulação)
-
-| Sintoma Observado | Causa Provável | Ação Corretiva |
+| Problema / Erro | Causa Provável | Solução |
 | :--- | :--- | :--- |
-| Valor no site difere do display do kit LTR701 por um valor fixo ou proporcional. | Equação de calibração $f(x)$ desatualizada ou potenciômetro divisor fora de escala ($10\text{ V} \to 3\text{ V}$). | Conferir `10.4*x + 0.0795` (temp.) e `3.94*exp(0.617*x)` (vazão) e medir a entrada com multímetro. |
-| Atuador ($P_H$ ou $P_M$) fica travado em $100\%$ ou oscila entre $0\%$ e $100\%$. | Ganhos $K_p$ e $K_i$ altos demais para o kit real ou ganho do LM741 saturando. | Dividir $K_p$ e $K_i$ por **$2$ ou por $10$** (orientação dos Roteiros 09 e 11) e retestar. |
-| Temperatura muito ruidosa ou instável. | Filtro passa-baixas digital ($12{,}5\text{ Hz}$) desabilitado no firmware/script. | Verificar se a equação a diferenças do filtro bilinear está ativa antes do erro $e(k)$. |
-| Sistema dá "pico" imediato ao religar a malha. | Acumulador integral $i(k)$ não foi zerado quando `enable = 0`. | Garantir o reset de $i(k) = 0$ sempre que o controle for desabilitado. |
-| Erro HTTP `401` na API do dispositivo. | `DEVICE_API_TOKEN` ausente ou diferente entre `web/.env` e ESP/MATLAB. | Conferir o token e rodar `php artisan config:clear`. |
-
----
-
-## 7. Checklist de Pendências para a Entrega Final
-
-Para fechar 100% dos entregáveis exigidos nas especificações de **SCOM** e **LCON-I**, o grupo deve concluir na sequência:
-- [ ] Atualizar `hardware/esp/ESP.ino` (e/ou o script MATLAB da NI-6003) para comunicar via HTTP REST com `/api/readings`, `/api/commands` e `/api/commands/ack` sem bloquear o loop de $100\text{ Hz}$.
-- [ ] Adicionar no dashboard o card de **Estatística Descritiva** das séries históricas (média, variância, curtose, assimetria e detecção de outliers) exigido em SCOM.
-- [ ] Implementar o módulo administrativo de **Backup automático diário e Restauração** do banco de dados.
-- [ ] Coletar e documentar no relatório técnico as métricas de rede da comunicação: **latência**, **throughput**, **perda de pacotes (%)** e **RTT (Round Trip Time)**.
+| `'php' não é reconhecido como comando` | `C:\xampp\php` não está no PATH do Windows. | Use `iniciar_ltr701.bat` ou chame `C:\xampp\php\php.exe`. |
+| `SQLSTATE[HY000] [2002]` ou `Unknown database` | MySQL desligado ou banco `projeto_integrador` não criado. | Inicie o MySQL no XAMPP, crie o banco (Seção 3, Passo 2) e rode `migrate:fresh --seed`. |
+| Erro `419` ou volta para `/login` ao mover slider | Navegador aberto em `localhost` enquanto `APP_URL` está em `127.0.0.1`. | Acesse sempre `http://127.0.0.1:8000` e rode `php artisan optimize:clear`. |
+| MATLAB falha em `tcpclient("127.0.0.1", 2000)` | `web/tcp_bridge.php` não está rodando ou fechou por erro de banco. | Abra o Terminal 2 e confirme `[TCP] Ponte LTR701 ouvindo em 127.0.0.1:2000`. |
+| `Dev1` não encontrado no MATLAB | Windows atribuiu outro índice à NI-USB-6003 (ex.: `Dev2`/`Dev3`). | Rode `daqlist("ni")` no MATLAB e atualize `dev_name` em `temperature_client_node.m`. |
+| Porta `8000` ou `2000` já em uso | Instância anterior do Laravel ou da ponte ficou aberta. | Execute `parar_ltr701.bat` (ou feche os CMDs antigos) e inicie de novo. |
+| Site mostra ligado, mas o kit não reage | Chaves `ACTUATOR 1/2` fora de `extern` ou fio `AO GND` solto. | Passe ambas as chaves para `extern` e confirme a conexão de `AO GND`. |
+| Temperatura estagna perto de $55\,^\circ\text{C}$ com `AO 0` em $9{,}5\text{ V}$ | Saturação térmica para a vazão configurada (`uFanConst`). | Reduza `uFanConst` no MATLAB (ex.: de $2{,}5\text{ V}$ para $1{,}5\text{ V}$) ou use setpoints dentro da faixa útil. |
